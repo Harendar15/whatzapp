@@ -1,0 +1,14 @@
+{
+  "name": "adchat-functions",
+  "version": "3.2.0",
+  "main": "index.js",
+  "engines": {
+    "node": "20"
+  },
+  "dependencies": {
+    "agora-access-token": "^2.0.2",
+    "dotenv": "^17.2.3",
+    "firebase-admin": "^13.6.0",
+    "firebase-functions": "^7.0.1"
+  }
+}

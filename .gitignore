@@ -1,0 +1,67 @@
+# Miscellaneous
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+
+# IntelliJ / VSCode
+.idea/
+.vscode/
+
+# Flutter/Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub/
+.pub-cache/
+build/
+coverage/
+
+# Android build only (NOT the whole android folder)
+android/**/build/
+android/app/build/
+android/.gradle/
+
+# iOS / macOS
+Pods/
+Podfile.lock
+Flutter/ephemeral/
+macos/Flutter/ephemeral/
+DerivedData/
+
+# Web build
+web/.dart_tool
+web/.flutter-plugins
+
+# Linux, Windows (only ignore build outputs)
+linux/flutter/ephemeral/
+windows/flutter/ephemeral/
+
+# Firebase
+google-services.json
+GoogleService-Info.plist
+firebase_app_id_file.json
+firebase_options.dart
+
+# Sensitive keys
+service_account.json
+keystore.properties
+
+# Binary artifacts (must never be committed)
+*.apk
+*.aab
+*.ipa
+**/kernel_blob.bin
+
+# Node related (if using functions/)
+functions/node_modules/
+functions/.pub/
+functions/.dart_tool/
+functions/.flutter-plugins
+functions/.flutter-plugins-dependencies
+
+# Others
+.packages.bak
+assets/service_account.json
