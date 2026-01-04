@@ -6,14 +6,14 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:cryptography/cryptography.dart';
-
 import '../../models/call_model.dart';
-
 // E2E stubs (replace with real implementations)
 import '../../crypto/session_manager.dart' as sm;
 import '../../crypto/identity_key_manager.dart';
-import '../../crypto/key_manager.dart';
+import '../../crypto/ensure_session_for_peer.dart';
 import 'package:adchat/helpers/local_storage.dart';
+import 'package:adchat/controller/call/call_controller.dart';
+import 'package:adchat/services/agora_service.dart';
 
 class CallRepository {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -27,158 +27,258 @@ class CallRepository {
     return base64Encode(bytes);
   }
 
-  Future<void> _ensureOrInitSessionForPeer({
-    required String myUid,
-    required String peerUid,
-    required String myDeviceId,
-  }) async {
-    final existing = await sm.loadSession(myUid, peerUid, myDeviceId);
-    if (existing != null) return;
+//   Future<void> _ensureOrInitSessionForPeer({
+//     required String myUid,
+//     required String peerUid,
+//     required String myDeviceId,
+//   }) async {
+//     final existing = await sm.loadSession(myUid, peerUid, myDeviceId);
+//     if (existing != null) return;
 
-    final identity = IdentityKeyManager(firestore: _firestore);
-    final deviceMap = await identity.fetchAllDevicePubMap(peerUid);
-    if (deviceMap.isEmpty) {
-      throw Exception('No public key for peer');
-    }
+//     final identity = IdentityKeyManager(firestore: _firestore);
+//     final deviceMap = await identity.fetchAllDevicePubMap(peerUid);
+//     if (deviceMap.isEmpty) {
+//       throw Exception('No public key for peer');
+//     }
 
-    final peerPubBytes = base64Decode(deviceMap.entries.first.value);
-    final peerPub = SimplePublicKey(
-      peerPubBytes,
-      type: KeyPairType.x25519,
-    );
+//     final peerPubBytes = base64Decode(deviceMap.entries.first.value);
+//     final peerPub = SimplePublicKey(
+//       peerPubBytes,
+//       type: KeyPairType.x25519,
+//     );
 
-    final keyManager = KeyManager(firestore: _firestore);
-    final myPair =
-        await keyManager.loadLocalKeyPair(uid: myUid, deviceId: myDeviceId);
+//     final keyManager = KeyManager(firestore: _firestore);
+//     final myPair =
+//         await keyManager.loadLocalKeyPair(uid: myUid, deviceId: myDeviceId);
 
- final peerDeviceId = deviceMap.keys.first;
+//     final peerDeviceId = deviceMap.keys.first;
+//     final isInitiator = myUid.compareTo(peerUid) < 0;
+//     final peerIdentityPub =
+//           await identity.fetchDevicePublicKey(
+//        peerUid,
+//         peerDeviceId,
+//       );
 
-      await sm.initSession(
-        myUid: myUid,
-        peerId: peerUid,
-        myKeyPair: myPair,
-        deviceId: myDeviceId,
-        peerDeviceId: peerDeviceId, // ✅ ADD THIS
-        peerPub: peerPub,
-      );
+// if (peerIdentityPub == null) {
+//   throw Exception('Peer identity key missing');
+// }
 
-  }
+
+//       await sm.initSession(
+//         myUid: myUid,
+//         peerId: peerUid,
+//          myIdentityKeyPair: myPair,
+//         deviceId: myDeviceId,
+//         peerDeviceId: peerDeviceId, // ✅ ADD THIS
+//         // peerPub: peerPub,
+//         peerIdentityPub: peerIdentityPub,
+//         // isInitiator: isInitiator,
+//       );
+
+//   }
 
   // ------------------------------------------------------
 
   Future<CallModel> createEncryptedCall({
-    required CallModel model,
-  }) async {
-    final caller = _auth.currentUser;
-    if (caller == null) throw Exception('Not logged in');
+  required CallModel model,
+}) async {
+  final caller = _auth.currentUser;
+  if (caller == null) throw Exception('Not logged in');
 
-    final myUid = caller.uid;
-    final peerUid = model.receiverId;
+  final myUid = caller.uid;
+  final peerUid = model.receiverId;
 
-    final deviceId = LocalStorage.getDeviceId();
-    if (deviceId == null) throw Exception("DeviceId missing");
+  final deviceId = LocalStorage.getDeviceId();
+  if (deviceId == null) throw Exception("DeviceId missing");
 
-    await _ensureOrInitSessionForPeer(
-      myUid: myUid,
-      peerUid: peerUid,
-      myDeviceId: deviceId,
-    );
+  // 🔐 Ensure E2E session
+  final identity = IdentityKeyManager(firestore: _firestore);
+final devices = await identity.fetchAllDevicePubMap(peerUid);
+if (devices.isEmpty) throw Exception('Peer has no devices');
 
-    final mediaKeyB64 = _randomKeyBase64(32);
+// ensure session with ALL devices
+  final peerDeviceId = devices.keys.first;
 
-    final payload = {
-      'callerName': model.callerName,
-      'callerImage': model.callerImage,
-      'receiverName': model.receiverName,
-      'receiverImage': model.receiverImage,
-      'type': model.type,
-      'mediaKey': mediaKeyB64,
-      'channelName': model.channelName,
-    };
-
-    final plainBytes =
-        Uint8List.fromList(utf8.encode(jsonEncode(payload)));
-
-    final envelope = await sm.encryptMessage(
-      myUid,
-      peerUid,
-      deviceId,
-      plainBytes,
-    );
-
-    await _firestore.collection(collection).doc(model.callId).set({
-      'callId': model.callId,
-      'callerId': model.callerId,
-      'receiverId': model.receiverId,
-      'status': model.status,
-      'timestamp': model.timestamp,
-      'ciphertext': envelope['ciphertext'],
-      'iv': envelope['iv'],
-      'mac': envelope['mac'],
-      'creatorUid': model.callerId,
-      'members': [model.callerId, model.receiverId],
-
-    });
-
-    return model;
-  }
-  // ✅ PUBLIC method for controllers
-Future<CallModel?> decryptIncomingCall(Map<String, dynamic> data) async {
-  final decrypted = await _decryptCallPayload(data);
-  if (decrypted == null) return null;
-
-  return CallModel(
-    callId: data['callId'] ?? '',
-    callerId: data['callerId'] ?? '',
-    callerName: decrypted['callerName'] ?? '',
-    callerImage: decrypted['callerImage'] ?? '',
-    receiverId: data['receiverId'] ?? '',
-    receiverName: decrypted['receiverName'] ?? '',
-    receiverImage: decrypted['receiverImage'] ?? '',
-    type: decrypted['type'] ?? 'audio',
-    status: data['status'] ?? '',
-    timestamp: data['timestamp'] ?? 0,
-    mediaKey: decrypted['mediaKey'] ?? '',
-    token:  data['token'] ?? '',
-    channelName: decrypted['channelName'] ?? '',
-    members: List<String>.from(data['members'] ?? []),
+  await ensureSessionForPeer(
+    firestore: _firestore,
+    myUid: myUid,
+    peerUid: peerUid,
+    peerDeviceId: peerDeviceId,
   );
+
+
+
+  // 🔑 Media key
+    final rawKey = Uint8List(32);
+    final rnd = Random.secure();
+    for (var i = 0; i < 32; i++) {
+      rawKey[i] = rnd.nextInt(256);
+    }
+
+    final mediaKey = base64Encode(rawKey);
+
+
+
+  final agoraToken = await AgoraService.instance.fetchToken(
+    channelName: model.channelName,
+    uid: myUid.hashCode,
+  );
+
+  final payload = {
+    'callerName': model.callerName,
+    'callerImage': model.callerImage,
+    'receiverName': model.receiverName,
+    'receiverImage': model.receiverImage,
+    'type': model.type,
+    'mediaKey': mediaKey,
+    'token': agoraToken,
+    'channelName': model.channelName,
+  };
+
+  final envelope = await sm.encryptMessage(
+  myUid,
+  peerUid,
+  deviceId,
+  peerDeviceId,   // ✅ ADD THIS
+  Uint8List.fromList(utf8.encode(jsonEncode(payload))),
+);
+
+
+  await _firestore.collection(collection).doc(model.callId).set({
+    'callId': model.callId,
+    'callerId': model.callerId,
+    'receiverId': model.receiverId,
+    'status': model.status,
+    'timestamp': model.timestamp,
+    'ciphertext': envelope['ciphertext'],
+    'iv': envelope['iv'],
+    'mac': envelope['mac'],
+    'senderDeviceId': deviceId,
+    'members': [model.callerId, model.receiverId],
+  });
+
+  final encryptedModel = model.copyWith(
+  mediaKey: mediaKey,
+  token: agoraToken,
+);
+
+return encryptedModel;
+
 }
+// ✅ DECRYPT INCOMING CALL (USED BY CallController)
+Future<CallModel?> decryptIncomingCall(
+    Map<String, dynamic> data,
+) async {
+  try {
+    if (data['ciphertext'] == null ||
+        data['iv'] == null ||
+        data['mac'] == null) {
+      return null;
+    }
 
-  // ------------------------------------------------------
-
-  Future<Map<String, dynamic>?> _decryptCallPayload(
-      Map<String, dynamic> data) async {
-        if (data['ciphertext'] == null ||
-    data['iv'] == null ||
-    data['mac'] == null) {
-  return null;
-}
-
-    final myUid = _auth.currentUser?.uid;
+    final myUid = FirebaseAuth.instance.currentUser?.uid;
     if (myUid == null) return null;
 
-    final peerId =
+    final peerUid =
         myUid == data['callerId'] ? data['receiverId'] : data['callerId'];
 
     final deviceId = LocalStorage.getDeviceId();
     if (deviceId == null) return null;
+    final identity = IdentityKeyManager(firestore: _firestore);
+  final devices = await identity.fetchAllDevicePubMap(peerUid);
+  if (devices.isEmpty) {
+    throw Exception('Peer has no devices');
+  }
+  final peerDeviceId = data['senderDeviceId'];
+  if (peerDeviceId == null) return null;
 
-    try {
-      await _ensureOrInitSessionForPeer(
-        myUid: myUid,
-        peerUid: peerId,
-        myDeviceId: deviceId,
-      );
-      final identity = IdentityKeyManager(firestore: _firestore);
-final peerPub = await identity.fetchAnyDevicePublicKey(peerId);
-if (peerPub == null) throw Exception("Peer identity missing");
 
-final plain = await sm.decryptMessage(
+await ensureSessionForPeer(
+  firestore: _firestore,
+  myUid: myUid,
+  peerUid: peerUid,
+  peerDeviceId: peerDeviceId,
+);
+
+
+
+   final plainBytes = await sm.decryptMessage(
   myUid,
-  peerId,
+  peerUid,
   deviceId,
-  peerPub, // ✅ REQUIRED
+  peerDeviceId,   // ✅ ADD THIS
+  {
+    'ciphertext': data['ciphertext'],
+    'iv': data['iv'],
+    'mac': data['mac'],
+  },
+);
+
+    final payload = jsonDecode(utf8.decode(plainBytes));
+
+    return CallModel(
+      callId: data['callId'],
+      callerId: data['callerId'],
+      receiverId: data['receiverId'],
+      callerName: payload['callerName'],
+      callerImage: payload['callerImage'],
+      receiverName: payload['receiverName'],
+      receiverImage: payload['receiverImage'],
+      type: payload['type'],
+      channelName: payload['channelName'],
+      mediaKey: payload['mediaKey'],
+      token: payload['token'],
+      status: data['status'],
+      timestamp: data['timestamp'],
+      members: List<String>.from(data['members'] ?? []),
+    );
+  } catch (e) {
+    debugPrint('❌ decryptIncomingCall failed: $e');
+    return null;
+  }
+}
+
+
+  // ------------------------------------------------------
+Future<Map<String, dynamic>?> _decryptCallPayload(
+    Map<String, dynamic> data) async {
+  if (data['ciphertext'] == null ||
+      data['iv'] == null ||
+      data['mac'] == null) {
+    return null;
+  }
+
+  final myUid = _auth.currentUser?.uid;
+  if (myUid == null) return null;
+
+  final peerUid =
+      myUid == data['callerId'] ? data['receiverId'] : data['callerId'];
+
+  final deviceId = LocalStorage.getDeviceId();
+  if (deviceId == null) return null;
+
+  try {
+    // 🔐 Ensure correct session using senderDeviceId
+    final identity = IdentityKeyManager(firestore: _firestore);
+  final devices = await identity.fetchAllDevicePubMap(peerUid);
+  if (devices.isEmpty) {
+    throw Exception('Peer has no devices');
+  }
+ final peerDeviceId = data['senderDeviceId'];
+  if (peerDeviceId == null) return null;
+
+  await ensureSessionForPeer(
+    firestore: _firestore,
+    myUid: myUid,
+    peerUid: peerUid,
+    peerDeviceId: peerDeviceId,
+  );
+
+    final plain = await sm.decryptMessage(
+  myUid,
+  peerUid,
+  deviceId,
+  peerDeviceId,   // ✅ ADD THIS
   {
     'ciphertext': data['ciphertext'],
     'iv': data['iv'],
@@ -187,12 +287,13 @@ final plain = await sm.decryptMessage(
 );
 
 
-      return jsonDecode(utf8.decode(plain));
-    } catch (e) {
-      debugPrint("decrypt error: $e");
-      return null;
-    }
-      }
+    return jsonDecode(utf8.decode(plain));
+  } catch (e) {
+    debugPrint('decrypt error: $e');
+    return null;
+  }
+}
+
 
   Stream<CallModel?> streamCallByReceiver(String receiverId) {
     return _firestore
@@ -219,7 +320,7 @@ final plain = await sm.decryptMessage(
         type: decrypted['type'] ?? 'audio',
         timestamp: data['timestamp'] ?? 0,
         mediaKey: decrypted['mediaKey'] ?? '',
-        token: ' ',
+       token: decrypted['token'] ?? '',
         channelName: decrypted['channelName'] ?? '',
         members: [data['callerId'], data['receiverId']].cast<String>(),
       );
@@ -258,7 +359,7 @@ final plain = await sm.decryptMessage(
           type: decrypted['type'] ?? 'audio',
           timestamp: data['timestamp'] ?? 0,
           mediaKey: decrypted['mediaKey'] ?? '',
-          token: ' ',
+          token: decrypted['token'] ?? '',
           channelName: decrypted['channelName'] ?? '',
           members: [data['callerId'], data['receiverId']].cast<String>(),
         ));

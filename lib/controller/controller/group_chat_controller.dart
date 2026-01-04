@@ -1,7 +1,7 @@
 // lib/controller/group_chat_controller.dart
 import 'dart:io';
 import 'dart:typed_data';
-
+import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -54,22 +54,25 @@ Future<Uint8List?> _loadSenderKey(String groupId) async {
 
 
   Future<String> decryptMessageText(GroupMessage m, String groupId) async {
-    try {
-      final key = await _loadSenderKey(groupId);
+  try {
+    final key = await _loadSenderKey(groupId);
 
-      if (key == null || m.ciphertext.isEmpty) {
-        return "[encrypted]";
-      }
-
-      return await _encryptor.decryptText(
-        senderKey: key,
-        ciphertextB64: m.ciphertext,
-        nonceB64: m.nonce,
-      );
-    } catch (_) {
-      return "[failed to decrypt]";
+    if (key == null || m.ciphertext.isEmpty) {
+      return "[encrypted]";
     }
+
+    return await _encryptor.decryptText(
+      senderKey: key,
+      ciphertext: m.ciphertext,
+      iv: m.nonce,
+      mac: m.mac,
+      aad: utf8.encode(groupId),
+    );
+  } catch (_) {
+    return "[failed to decrypt]";
   }
+}
+
 
   Future<File> decryptMedia(GroupMessage m, String groupId) async {
     final key = await _loadSenderKey(groupId);

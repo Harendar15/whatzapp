@@ -19,7 +19,9 @@ class MessageReplyPreview extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    
     final messageReply = ref.watch(messageReplyProvider);
+    if (messageReply == null) return const SizedBox();
 
     return Container(
       width: 350,

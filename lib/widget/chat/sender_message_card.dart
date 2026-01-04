@@ -20,6 +20,8 @@ class SenderTextCard extends StatelessWidget {
   final String username;
   final MessageModel repliedMessageType;
   final Map<String, List<String>> reactions;
+  final String? fileUrl;
+
 
   const SenderTextCard({
     super.key,
@@ -30,6 +32,7 @@ class SenderTextCard extends StatelessWidget {
     required this.repliedText,
     required this.username,
     required this.repliedMessageType,
+     this.fileUrl,
     this.reactions = const {},
   });
 
@@ -78,8 +81,10 @@ class SenderTextCard extends StatelessWidget {
       child: TextImageGIFWidget(
         message: message,
         type: type,
+        fileUrl: fileUrl, // ✅ PASS URL
         color: Get.isDarkMode ? Colors.white : Colors.black87,
       ),
+
     );
   }
 

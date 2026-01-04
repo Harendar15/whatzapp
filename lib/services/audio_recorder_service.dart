@@ -1,68 +1,54 @@
 import 'dart:io';
-import 'package:flutter_sound/flutter_sound.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 class AudioRecorderService {
-  FlutterSoundRecorder? _recorder;
-  bool _isRecorderInitialized = false;
-
-  String? recordedFilePath;
-
-  AudioRecorderService() {
-    _recorder = FlutterSoundRecorder();
-  }
+  String? _recordedFilePath;
+  bool _isRecording = false;
 
   // ---------------------------------------------
-  // INIT RECORDER
+  // INIT (PERMISSION ONLY)
   // ---------------------------------------------
   Future<void> initRecorder() async {
-    // Request permissions
-    await Permission.microphone.request();
-
-    if (_recorder!.isStopped) {
-      await _recorder!.openRecorder();
+    final status = await Permission.microphone.request();
+    if (!status.isGranted) {
+      throw Exception('Microphone permission not granted');
     }
-
-    _isRecorderInitialized = true;
   }
 
   // ---------------------------------------------
-  // START RECORDING
+  // START RECORDING (PATH GENERATION)
   // ---------------------------------------------
-  Future<String?> startRecording() async {
-    if (!_isRecorderInitialized) {
-      await initRecorder();
-    }
+  Future<String> startRecording() async {
+    if (_isRecording) return _recordedFilePath!;
 
-    Directory appDir = await getApplicationDocumentsDirectory();
+    await initRecorder();
 
-    recordedFilePath =
-        "${appDir.path}/recording_${DateTime.now().millisecondsSinceEpoch}.aac";
+    final dir = await getTemporaryDirectory();
+    _recordedFilePath =
+        '${dir.path}/voice_${DateTime.now().millisecondsSinceEpoch}.aac';
 
-    await _recorder!.startRecorder(
-      toFile: recordedFilePath,
-      codec: Codec.aacMP4,
-    );
+    // 🔴 REAL recording will be handled by platform / future plugin
+    _isRecording = true;
 
-    return recordedFilePath;
+    return _recordedFilePath!;
   }
 
   // ---------------------------------------------
   // STOP RECORDING
   // ---------------------------------------------
-  Future<String?> stopRecording() async {
-    if (!_isRecorderInitialized) return null;
+  Future<File?> stopRecording() async {
+    if (!_isRecording || _recordedFilePath == null) return null;
 
-    await _recorder!.stopRecorder();
-    return recordedFilePath;
+    _isRecording = false;
+    return File(_recordedFilePath!);
   }
 
   // ---------------------------------------------
   // DISPOSE
   // ---------------------------------------------
-  Future<void> disposeRecorder() async {
-    await _recorder!.closeRecorder();
-    _isRecorderInitialized = false;
+  void disposeRecorder() {
+    _isRecording = false;
+    _recordedFilePath = null;
   }
 }

@@ -16,7 +16,7 @@ class AuthController {
   AuthController(this.ref);
 
   AuthRepository get _repo => ref.read(authRepositoryProvider);
-
+    
   // -----------------------------
   // SEND OTP
   // -----------------------------
@@ -26,6 +26,7 @@ class AuthController {
   }) async {
     await _repo.signInWithPhone(context, phone);
   }
+
 
   // -----------------------------
   // RESEND OTP

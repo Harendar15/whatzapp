@@ -7,17 +7,16 @@ import 'package:cryptography/cryptography.dart';
 
 import 'crypto_utils.dart' as utils;
 import 'aead.dart';
-import 'key_manager.dart';
+import 'identity_key_manager.dart';
 
 Uint8List _u8(List<int> l) => Uint8List.fromList(l);
 
 class GroupKeyHelper {
   final FirebaseFirestore firestore;
-  final KeyManager keyManager;
 
   GroupKeyHelper({
     required this.firestore,
-    required this.keyManager,
+
   });
 
   /// Generate 32-byte AES key
@@ -29,23 +28,13 @@ Uint8List generateGroupKey() {
 
 
   /// Fetch member’s first device public key
-  Future<SimplePublicKey?> fetchFirstDevicePublicKey(String uid) async {
-    final snap = await firestore
-        .collection("users")
-        .doc(uid)
-        .collection("devices")
-        .get();
 
-    if (snap.docs.isEmpty) return null;
 
-    final base64Pub = snap.docs.first.data()["publicKey"];
-    if (base64Pub == null) return null;
+Future<SimplePublicKey?> fetchFirstDevicePublicKey(String uid) async {
+  final identity = IdentityKeyManager(firestore: firestore);
+  return await identity.fetchAnyDevicePublicKey(uid);
+}
 
-    return SimplePublicKey(
-      base64Decode(base64Pub),
-      type: KeyPairType.x25519,
-    );
-  }
 
   /// Encrypt group key for member
   Future<Map<String, dynamic>> encryptKeyForMember({

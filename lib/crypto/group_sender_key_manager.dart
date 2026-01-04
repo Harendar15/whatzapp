@@ -5,7 +5,7 @@ import 'dart:typed_data';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-
+import '../helpers/local_storage.dart';
 import 'identity_key_manager.dart';  // 🔥 ADD THIS
 
 /// Manages group sender keys (WhatsApp-style):
@@ -15,12 +15,12 @@ import 'identity_key_manager.dart';  // 🔥 ADD THIS
 class GroupSenderKeyManager {
   final FirebaseFirestore firestore;
   final FlutterSecureStorage _storage = const FlutterSecureStorage();
-
+  
   // 🔥 NEW: to fetch device public keys
   final IdentityKeyManager _identity;
 
   GroupSenderKeyManager({required this.firestore}): _identity = IdentityKeyManager(firestore: firestore);
-
+  
   /// Generate random 32-byte sender key
   Future<Uint8List> generateSenderKey32() async {
     final rand = AesGcm.with256bits();
@@ -28,8 +28,14 @@ class GroupSenderKeyManager {
     return Uint8List.fromList(await secret.extractBytes());
   }
 
-  /// Local cache key name
-  String _localKey(String groupId, String keyId) => 'gsk::$groupId::$keyId';
+   /// 🔑 Local cache key (DEVICE-BOUND)
+  String _localKey(String groupId, String keyId) {
+    final deviceId = LocalStorage.getDeviceId();
+    if (deviceId == null || deviceId.isEmpty) {
+      throw Exception('DeviceId missing');
+    }
+    return 'gsk::$groupId::$keyId::$deviceId';
+  }
 
   /// Cache sender key locally (per groupId + keyId)
   Future<void> cacheSenderKeyLocally({
@@ -159,7 +165,8 @@ class GroupSenderKeyManager {
     return {
       'wrapped': base64Encode(combined),
       'nonce': base64Encode(nonce),
-      'ephemeralPub': base64Encode(await ephPub.bytes),
+      'ephemeralPub': base64Encode(ephPub.bytes),
+
     };
   }
 

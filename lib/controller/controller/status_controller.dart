@@ -15,8 +15,13 @@ import 'package:adchat/crypto/identity_key_manager.dart';
 class StatusState {
   final List<Status> statuses;
   final bool loading;
+
   StatusState({required this.statuses, required this.loading});
-  StatusState copyWith({List<Status>? statuses, bool? loading}) {
+
+  StatusState copyWith({
+    List<Status>? statuses,
+    bool? loading,
+  }) {
     return StatusState(
       statuses: statuses ?? this.statuses,
       loading: loading ?? this.loading,
@@ -25,22 +30,21 @@ class StatusState {
 }
 
 final statusRepositoryProvider = Provider<StatusRepository>((ref) {
-  final storage = ref.read(commonFirebaseStorageRepositoryProvider);
-  final identity = IdentityKeyManager(firestore: FirebaseFirestore.instance);
-  final media = MediaHelper();
   return StatusRepository(
     firestore: FirebaseFirestore.instance,
-    storage: storage,
-    identity: identity,
-    media: media,
+    storage: ref.read(commonFirebaseStorageRepositoryProvider),
+    identity: IdentityKeyManager(firestore: FirebaseFirestore.instance),
+    media: MediaHelper(),
   );
 });
 
 final statusControllerProvider =
     StateNotifierProvider<StatusController, StatusState>((ref) {
-  final repo = ref.read(statusRepositoryProvider);
-  final authRepo = ref.read(authRepositoryProvider);
-  return StatusController(ref: ref, repo: repo, authRepo: authRepo);
+  return StatusController(
+    ref: ref,
+    repo: ref.read(statusRepositoryProvider),
+    authRepo: ref.read(authRepositoryProvider),
+  );
 });
 
 class StatusController extends StateNotifier<StatusState> {
@@ -56,25 +60,27 @@ class StatusController extends StateNotifier<StatusState> {
     required this.authRepo,
   }) : super(StatusState(statuses: [], loading: false));
 
-  List<Status> get statuses => state.statuses;
-  bool get loading => state.loading;
-
+  // ============================================================
+  // 🔄 BIND STATUS STREAM
+  // ============================================================
   void bindVisibleStatuses() {
     _sub?.cancel();
-    final myUid = authRepo.currentUid;
-    if (myUid == null) {
-      state = state.copyWith(statuses: []);
-      return;
-    }
 
-    repo.autoDeleteOldStatusesForUser(myUid);
+    final myUid = authRepo.currentUid;
+    if (myUid == null) return;
+
     state = state.copyWith(loading: true);
 
-    _sub = repo.getVisibleStatuses(myUid).listen((list) {
-      state = state.copyWith(statuses: list, loading: false);
-    }, onError: (e) {
-      state = state.copyWith(loading: false);
-    });
+    repo.autoDeleteOldStatusesForUser(myUid);
+
+    _sub = repo.getVisibleStatuses(myUid).listen(
+      (list) {
+        state = state.copyWith(statuses: list, loading: false);
+      },
+      onError: (_) {
+        state = state.copyWith(loading: false);
+      },
+    );
   }
 
   @override
@@ -83,72 +89,78 @@ class StatusController extends StateNotifier<StatusState> {
     super.dispose();
   }
 
-Stream<Map<String, dynamic>> viewersStreamDetailed(
-  String ownerUid,
-  int index,
-) {
-  return FirebaseFirestore.instance
-      .collection('status')
-      .doc(ownerUid)
-      .snapshots()
-      .map((doc) {
-    final data = doc.data() ?? {};
-    final seenBy = Map<String, dynamic>.from(data['seenBy'] ?? {});
-    final viewers = Map<String, int>.from(seenBy['$index'] ?? {});
-    return {
-      'uids': viewers.keys.toList(),
-      'times': viewers,
-    };
-  });
-}
-
-
-  Future<void> uploadStatus({
-  required File file,
-  required List<String> whoCanSee,
-  String caption = '',
-}) async {
-  state = state.copyWith(loading: true);
-  try {
-    final user = await authRepo.getCurrentUserData();
-    if (user == null) throw Exception('Not logged in');
-
-    final myUid = user.uid;
-
-    // 🔥 FIX: if whoCanSee empty → allow all contacts
-    List<String> visibilityList = whoCanSee;
-
-    if (visibilityList.isEmpty) {
-      final contactsSnap = await FirebaseFirestore.instance
-          .collection('users')
-          .get();
-
-      visibilityList = contactsSnap.docs
-          .map((d) => d.id)
-          .where((uid) => uid != myUid)
-          .toList();
-    }
-
-    final finalVisibilityList = {
-      ...visibilityList,
-      myUid,
-    }.toList();
-
-    await repo.uploadStatusEncrypted(
-      uid: myUid,
-      username: user.name,
-      phoneNumber: user.phoneNumber,
-      profilePic: user.profilePic,
-      file: file,
-      whoCanSee: finalVisibilityList,
-      caption: caption,
-    );
-  } finally {
-    state = state.copyWith(loading: false);
+  // ============================================================
+  // 👀 VIEWERS STREAM (FIXED – single source)
+  // ============================================================
+  Stream<Map<String, int>> viewersStream(String ownerUid, int index) {
+    return FirebaseFirestore.instance
+        .collection('status')
+        .doc(ownerUid)
+        .collection('views')
+        .doc('$index')
+        .snapshots()
+        .map((snap) {
+      if (!snap.exists) return {};
+      final data = snap.data()!;
+      return Map<String, int>.from(data['detail'] ?? {});
+    });
   }
+
+  // ============================================================
+  // ⬆️ UPLOAD STATUS (FORCE DEVICE REGISTRATION)
+  // ============================================================
+  Future<void> uploadStatus({
+    required File file,
+    required List<String> whoCanSee,
+    String caption = '',
+  }) async {
+    state = state.copyWith(loading: true);
+    try {
+      final user = await authRepo.getCurrentUserData();
+      if (user == null) throw Exception('Not logged in');
+
+      final myUid = user.uid;
+      final deviceId = authRepo.currentDeviceId;
+
+      // 🔥 FORCE REGISTER DEVICE
+      await repo.identity.loadOrCreateIdentityKey(myUid, deviceId);
+
+     // whoCanSee = phone numbers list
+        final resolvedUids =
+            await repo.resolveContactUidsFromPhoneNumbers(whoCanSee);
+
+        final visibility = {
+          ...resolvedUids,
+          myUid, // owner always included
+        }.toList();
+
+      await repo.uploadStatusEncrypted(
+        uid: myUid,
+        username: user.name,
+        phoneNumber: user.phoneNumber,
+        profilePic: user.profilePic,
+        file: file,
+        whoCanSee: visibility,
+        caption: caption,
+      );
+    } finally {
+      state = state.copyWith(loading: false);
+    }
+  }
+  Future<List<String>> _getMyContactsUids() async {
+  final myUid = authRepo.currentUid!;
+  final snap = await FirebaseFirestore.instance
+      .collection('users')
+      .doc(myUid)
+      .collection('contacts')
+      .get();
+
+  return snap.docs.map((d) => d.id).toList();
 }
 
-
+  // ============================================================
+  // 🔓 DOWNLOAD + DECRYPT STATUS
+  // ============================================================
   Future<File> downloadAndDecryptStatusImage({
     required String ownerUid,
     required int index,
@@ -157,73 +169,99 @@ Stream<Map<String, dynamic>> viewersStreamDetailed(
     final myDeviceId = authRepo.currentDeviceId;
     if (myUid == null) throw Exception('Not logged in');
 
-    final doc = await FirebaseFirestore.instance.collection('status').doc(ownerUid).get();
-    if (!doc.exists) throw Exception('status missing');
+    final doc =
+        await FirebaseFirestore.instance.collection('status').doc(ownerUid).get();
+    if (!doc.exists) throw Exception('Status not found');
+
     final data = doc.data()!;
-    final urls = List<String>.from(data['statusUrl'] ?? []);
-    final keyIds = List<String>.from(data['keyIds'] ?? []);
-    final contentNonces = Map<String, dynamic>.from(data['contentNonces'] ?? {});
-    final mediaExts = List<String>.from(data['mediaExts'] ?? []);
-
-    if (index >= urls.length) throw Exception('index out of range');
-
-    final url = urls[index];
-    final keyId = keyIds[index];
-    final contentNonceB64 = contentNonces[keyId];
-    if (contentNonceB64 == null) throw Exception('missing content nonce');
+    final urls = List<String>.from(data['statusUrl']);
+    final keyIds = List<String>.from(data['keyIds']);
+    final nonces = Map<String, dynamic>.from(data['contentNonces']);
+    final exts = List<String>.from(data['mediaExts']);
 
     final wrapped = await repo.fetchWrappedKeyForRecipient(
       ownerUid: ownerUid,
       recipientUid: myUid,
-      deviceId: authRepo.currentDeviceId,
+      deviceId:  authRepo.currentDeviceId,
     );
-    if (wrapped == null || wrapped['wrapped'] == null) {
-      throw Exception('No wrapped key for you');
-    }
 
-final symmetricKey = await repo.identity.unwrapSymmetricKeyForMe(
-  uid: myUid,
-  deviceId: myDeviceId,
-  wrapped: wrapped,
-);
+    if (wrapped == null) throw Exception('No wrapped key');
 
+    final contentKey = await repo.identity.unwrapSymmetricKeyForMe(
+      uid: myUid,
+      deviceId: myDeviceId,
+      wrapped: wrapped,
+    );
 
     final cipherFile = await repo.media.downloadFileFromUrlToTemp(
-      url,
-      outName: 'status_${ownerUid}_$keyId.enc',
+      urls[index],
+      outName: 'status_${keyIds[index]}.enc',
     );
 
-    final outExt = mediaExts.length > index ? mediaExts[index] : 'jpg';
-
-    final plain = await repo.media.decryptFileWithKey(
+    return repo.media.decryptFileWithKey(
       cipherFile: cipherFile,
-      contentKey: symmetricKey,
-      contentNonce: contentNonceB64,
-      outExtension: outExt,
+      contentKey: contentKey,
+      contentNonce: nonces[keyIds[index]],
+      outExtension: exts[index],
     );
-
-    return plain;
   }
+  /// 👁️ Viewers stream with timestamp (WhatsApp style)
+Stream<Map<String, dynamic>> viewersStreamDetailed(
+  String ownerUid,
+  int index,
+) {
+  return FirebaseFirestore.instance
+      .collection('status')
+      .doc(ownerUid)
+      .collection('views')
+      .doc('$index')
+      .snapshots()
+      .map((doc) {
+    if (!doc.exists) {
+      return {
+        'uids': <String>[],
+        'times': <String, int>{},
+      };
+    }
 
+    final data = doc.data()!;
+    final viewers = List<String>.from(data['viewers'] ?? []);
+    final detail = Map<String, int>.from(data['detail'] ?? {});
+
+    return {
+      'uids': viewers,
+      'times': detail,
+    };
+  });
+}
+
+  // ============================================================
+  // 👁 MARK AS SEEN (SINGLE SOURCE)
+  // ============================================================
   Future<void> markAsSeen({
     required String ownerUid,
-    required String viewerUid,
     required int index,
   }) async {
-    final seenRef = FirebaseFirestore.instance
+    final myUid = authRepo.currentUid;
+    if (myUid == null) return;
+
+    final ref = FirebaseFirestore.instance
         .collection('status')
         .doc(ownerUid)
         .collection('views')
         .doc('$index');
-    await seenRef.set({
-      'viewers': FieldValue.arrayUnion([viewerUid]),
+
+    await ref.set({
+      'viewers': FieldValue.arrayUnion([myUid]),
       'detail': {
-        viewerUid: DateTime.now().millisecondsSinceEpoch,
+        myUid: DateTime.now().millisecondsSinceEpoch,
       },
-      'lastViewedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
   }
 
+  // ============================================================
+  // 🗑 DELETE
+  // ============================================================
   Future<void> deleteSingleStatus({
     required String ownerUid,
     required int index,
@@ -235,18 +273,5 @@ final symmetricKey = await repo.identity.unwrapSymmetricKeyForMe(
     final myUid = authRepo.currentUid;
     if (myUid == null) return;
     await repo.deleteAllStatusesOfUser(myUid);
-  }
-
-  Stream<List<String>> viewersStream(String ownerUid, int index) {
-    final refViews = FirebaseFirestore.instance
-        .collection('status')
-        .doc(ownerUid)
-        .collection('views')
-        .doc('$index');
-    return refViews.snapshots().map((snap) {
-      if (!snap.exists) return <String>[];
-      final data = snap.data()!;
-      return List<String>.from(data['viewers'] ?? []);
-    });
   }
 }

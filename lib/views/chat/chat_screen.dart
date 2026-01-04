@@ -19,6 +19,12 @@ import 'package:adchat/widget/chat/chat_list_widget.dart';
 import 'package:adchat/widget/safe_image.dart';
 import 'package:adchat/controller/repo/auth_repository.dart';
 import 'package:adchat/controller/repo/chat_repo.dart';
+import 'package:adchat/crypto/identity_key_manager.dart';
+import 'package:adchat/crypto/ensure_session_for_peer.dart';
+import 'package:adchat/crypto/session_guard.dart';
+import 'package:adchat/helpers/local_storage.dart';
+import 'package:adchat/views/call/outgoing_call_screen.dart';
+import 'dart:async'; // for unawaited
 
 class ChatScreen extends ConsumerStatefulWidget {
   static const String routeName = '/mobile-chat-screen';
@@ -63,51 +69,75 @@ void dispose() {
     messageFocusNode.unfocus();
   }
   messageFocusNode.dispose();
+
+
+
+
   super.dispose();
 }
 
-  @override
-  void initState() {
-    super.initState();
-    _guardGroupAccess();
-    _fetchUserData();
+@override
+void initState() {
+  super.initState();
+  _guardGroupAccess();
+}
 
-    if (widget.fromStatusReply) {
-      Future.delayed(const Duration(milliseconds: 300), () {
-        if (mounted) {
-          FocusScope.of(context).requestFocus(messageFocusNode);
-        }
-      });
-    }
+
+
+// @override
+// void didChangeDependencies() {
+//   super.didChangeDependencies();
+//   _guardGroupAccess();
+
+//   // 🔐 CREATE E2E SESSION ON CHAT OPEN
+//   _ensureE2ESession();
+// }
+
+
+
+Future<void> _ensureE2ESession() async {
+  if (widget.isHideChat) return;
+  if (widget.isGroupChat || widget.isCommunityChat) return;
+
+  final myUid = FirebaseAuth.instance.currentUser?.uid;
+  if (myUid == null) return;
+
+  final deviceId = LocalStorage.getDeviceId();
+  if (deviceId == null || deviceId.isEmpty) return;
+
+  // 🔑 Fetch peer devices
+  final identity = IdentityKeyManager(
+    firestore: FirebaseFirestore.instance,
+  );
+
+  final devices = await identity.fetchAllDevicePubMap(widget.uid);
+  if (devices.isEmpty) {
+    debugPrint('❌ Peer has no registered devices');
+    return;
   }
-  
 
-  Future<void> _fetchUserData() async {
-   
+  // ✅ Pick ONE peer device (Signal-style)
+ final peerDeviceId = devices.keys.toList()..sort();
+final selectedPeerDeviceId = peerDeviceId.first;
 
-    setState(() => isLoading = true);
-    userInfo.clear();
-    try {
-      final members = widget.isGroupChat
-          ? (widget.groupData?.membersUid ?? [])
-          : widget.isCommunityChat
-              ? (widget.communityData?.membersUid ?? [])
-              : [widget.uid];
 
-      for (final uid in members) {
-        final snapshot = await FirebaseFirestore.instance
-            .collection('users')
-            .doc(uid)
-            .get();
+await SessionGuard.run(
+  key: 'chat-open-${myUid}-${widget.uid}-$selectedPeerDeviceId',
+  action: () async {
+    await ensureSessionForPeer(
+      firestore: FirebaseFirestore.instance,
+      myUid: myUid,
+      peerUid: widget.uid,
+      peerDeviceId: selectedPeerDeviceId,
+    );
+  },
+);
 
-        if (snapshot.exists && snapshot.data() != null) {
-          userInfo.add(UserModel.fromMap(snapshot.data()!));
-        }
-      }
-    } catch (_) {} finally {
-      if (mounted) setState(() => isLoading = false);
-    }
-  }
+
+  debugPrint('✅ E2E session ensured on chat open');
+}
+
+
 
   @override
   Widget build(BuildContext context) {
@@ -211,10 +241,15 @@ void dispose() {
 
     return AppBar(
       backgroundColor: Theme.of(context).appBarTheme.backgroundColor,
-      leading: IconButton(
+     leading: IconButton(
         icon: const Icon(Icons.arrow_back_rounded),
-        onPressed: () => Get.back(),
+          onPressed: () {
+        final repo = ref.read(chatRepositoryProvider);
+        repo.disposeRepo(); // 🔥 HARD STOP EVERYTHING
+        Get.back();
+      },
       ),
+
       title: w.isCommunityChat ? _communityTitle(w) : _userTitle(w),
 
       actions: [
@@ -260,52 +295,62 @@ void dispose() {
                     );
 
                     // 🔐 CREATE ENCRYPTED CALL (MANDATORY)
-                    await repo.createEncryptedCall(model: call);
+                
+                    Get.toNamed(
+  OutgoingCallScreen.routeName,
+  arguments: call.toMap(), // TEMP
+);
 
-                    // 🔔 START CALL FLOW
-                    await callCtrl.startCall(call: call);
+// run encryption AFTER navigation
+unawaited(
+  repo.createEncryptedCall(model: call),
+);
+
+
+
                   },
 
                   ),
                   IconButton(
-                    icon: Icon(
-                      Icons.videocam,
-                      color: blocked ? Colors.grey : Colors.white,
-                    ),
-                   onPressed: blocked
-                  ? null
-                  : () async {
-                      final me = await ref
-                          .read(authRepositoryProvider)
-                          .getCurrentUserData();
-                      if (me == null) return;
+  icon: Icon(
+    Icons.videocam,
+    color: blocked ? Colors.grey : Colors.white,
+  ),
+  onPressed: blocked
+      ? null
+      : () async {
+          final me = await ref
+              .read(authRepositoryProvider)
+              .getCurrentUserData();
+          if (me == null) return;
 
-                      final repo = CallRepository();
+          final repo = CallRepository();
 
-                      final call = CallModel(
-                        callId: DateTime.now().millisecondsSinceEpoch.toString(),
-                        callerId: me.uid,
-                        callerName: me.name,
-                        callerImage: me.profilePic,
-                        receiverId: w.uid,
-                        receiverName: w.name,
-                        receiverImage: w.profilePic,
-                        channelName: "call_${DateTime.now().millisecondsSinceEpoch}",
-                        token: "",
-                        type: "video",
-                        status: "ringing",
-                        timestamp: DateTime.now().millisecondsSinceEpoch,
-                        mediaKey: "",
-                        members: [me.uid, w.uid],
-                      );
+          final call = CallModel(
+            callId: DateTime.now().millisecondsSinceEpoch.toString(),
+            callerId: me.uid,
+            callerName: me.name,
+            callerImage: me.profilePic,
+            receiverId: w.uid,
+            receiverName: w.name,
+            receiverImage: w.profilePic,
+            channelName: "call_${DateTime.now().millisecondsSinceEpoch}",
+            token: "",
+            type: "video",
+            status: "ringing",
+            timestamp: DateTime.now().millisecondsSinceEpoch,
+            mediaKey: "",
+            members: [me.uid, w.uid],
+          );
 
-                      // 🔐 ENCRYPTED CALL FIRST
-                      await repo.createEncryptedCall(model: call);
+          // ✅ MUST USE ENCRYPTED RESULT
+          final encryptedCall =
+              await repo.createEncryptedCall(model: call);
 
-                      await callCtrl.startCall(call: call);
-                    },
+          await callCtrl.startCall(call: encryptedCall);
+        },
+),
 
-                  ),
                 ],
               );
             },
@@ -486,7 +531,6 @@ void dispose() {
     if (thatDay == today.subtract(const Duration(days: 1))) {
       return 'yesterday at $timeStr';
     }
-
     return '${dt.day.toString().padLeft(2, '0')}/${dt.month.toString().padLeft(2, '0')} at $timeStr';
   }
 

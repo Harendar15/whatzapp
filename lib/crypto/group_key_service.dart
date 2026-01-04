@@ -5,7 +5,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import 'group_key_helper.dart';
-import 'key_manager.dart';
+import 'identity_key_manager.dart';
+
 
 final _secure = const FlutterSecureStorage();
 
@@ -15,19 +16,13 @@ Uint8List _u8(List<int> l) => Uint8List.fromList(l);
 
 class GroupKeyService {
   final FirebaseFirestore firestore;
-  final KeyManager keyManager;
+
   final GroupKeyHelper helper;
 
   GroupKeyService({
     required this.firestore,
-    KeyManager? keyManager,
     GroupKeyHelper? helper,
-  })  : keyManager = keyManager ?? KeyManager(firestore: firestore),
-        helper = helper ??
-            GroupKeyHelper(
-              firestore: firestore,
-              keyManager: keyManager ?? KeyManager(firestore: firestore),
-            );
+  })  : helper = GroupKeyHelper(firestore: firestore);
 
   Future<Uint8List?> getCachedGroupKey(String groupId, String myUid) async {
     final keyB64 =
@@ -72,8 +67,11 @@ class GroupKeyService {
       throw Exception('Key entry is pending (encrypted == null).');
     }
 
-    final localKeyPair =
-        await keyManager.loadLocalKeyPair(uid: myUid, deviceId: deviceId);
+    final identity = IdentityKeyManager(firestore: firestore);
+
+final localKeyPair =
+    await identity.loadOrCreateIdentityKey(myUid, deviceId);
+
 
     final plaintext = await helper.decryptGroupKeyForMe(
       encryptedDoc: data,

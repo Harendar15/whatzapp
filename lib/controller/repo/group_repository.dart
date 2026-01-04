@@ -327,10 +327,12 @@ final keyId = metaData['senderKeyId'];
         throw Exception("DeviceId missing");
       }
 
-    final enc = await _encryptor.encryptText(
-      senderKey: senderKey,
-      plaintext: message,
-    );
+ final enc = await _encryptor.encryptText(
+  senderKey: senderKey,
+  plaintext: message,
+  aad: utf8.encode(groupId),
+);
+
 
     final metaSnap = await firestore
         .collection('groups')
@@ -352,6 +354,7 @@ final keyId = metaData['senderKeyId'];
   type: MessageModel.text, // FIXED ENUM
   ciphertext: enc['ciphertext'] ?? '',
   nonce: enc['nonce'] ?? '',
+  mac: enc['mac'] ?? '',
   fileUrl: '',
   wrappedContentKey: '',
   wrappedContentKeyNonce: '',
@@ -404,10 +407,14 @@ final keyId = metaData['senderKeyId'];
       }
 
       final plain = await _encryptor.decryptText(
-        senderKey: senderKey,
-        ciphertextB64: message.ciphertext,
-        nonceB64: message.nonce,
-      );
+  senderKey: senderKey,
+  ciphertext: message.ciphertext,
+  iv: message.nonce,
+  mac: message.mac,
+  aad: utf8.encode(message.groupId),
+);
+
+
 
       return plain;
     } catch (e) {
@@ -471,6 +478,7 @@ final keyId = metaData['senderKeyId'];
   mediaExt: ext,
   ciphertext: '',
   nonce: '',
+  mac:  '',
   fileUrl: encryptedMedia['url'] ?? '',
   wrappedContentKey: encryptedMedia['wrappedContentKey'] ?? '',
   wrappedContentKeyNonce: encryptedMedia['wrappedContentKeyNonce'] ?? '',
@@ -601,6 +609,7 @@ if (deviceId == null) throw Exception("DeviceId missing");
         .update({
       'ciphertext': enc['ciphertext'],
       'nonce': enc['nonce'],
+      'mac': enc['mac'], 
       'edited': true,
     });
   }

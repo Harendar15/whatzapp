@@ -1,4 +1,3 @@
-// lib/crypto/media_helper.dart
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -11,19 +10,15 @@ class MediaHelper {
   final FirebaseStorage _storage = FirebaseStorage.instance;
   final AesGcm _aes = AesGcm.with256bits();
 
-  // -------------------------
-  // helpers
-  // -------------------------
-  Future<Directory> _getTempDir() async => await getTemporaryDirectory();
+  Future<Directory> _getTempDir() async => getTemporaryDirectory();
 
-  /// Generate a new random 32-byte content key
+  /// Generate random 32-byte content key
   Future<Uint8List> generateRandomContentKey() async {
-    final k = await _aes.newSecretKey();
-    final bytes = await k.extractBytes();
-    return Uint8List.fromList(bytes);
+    final key = await _aes.newSecretKey();
+    return Uint8List.fromList(await key.extractBytes());
   }
 
-  /// Encrypt file with provided 32-byte contentKey.
+  /// Encrypt file using provided AES key
   Future<Map<String, dynamic>> encryptFileWithKey({
     required File file,
     required Uint8List contentKey,
@@ -31,61 +26,81 @@ class MediaHelper {
   }) async {
     final bytes = await file.readAsBytes();
     final nonce = _aes.newNonce();
+
     final encrypted = await _aes.encrypt(
       bytes,
-      secretKey: SecretKey(contentKey),
+      secretKey: SecretKeyData(contentKey), // ✅ FIX
       nonce: nonce,
     );
 
-    final combined = Uint8List.fromList([...encrypted.cipherText, ...encrypted.mac.bytes]);
+    final combined = Uint8List.fromList([
+      ...encrypted.cipherText,
+      ...encrypted.mac.bytes,
+    ]);
+
     final dir = await _getTempDir();
-    final out = File('${dir.path}/${targetFilenamePrefix ?? 'enc'}_${DateTime.now().millisecondsSinceEpoch}.enc');
+    final out = File(
+      '${dir.path}/${targetFilenamePrefix ?? 'enc'}_${DateTime.now().millisecondsSinceEpoch}.enc',
+    );
+
     await out.writeAsBytes(combined, flush: true);
 
     return {
       'cipherFile': out,
       'contentNonce': base64Encode(nonce),
-      'encryptedBytes': combined, // optional
+      'encryptedBytes': combined,
     };
   }
 
-  /// Decrypt file with provided contentKey and contentNonce (base64)
+  /// Decrypt encrypted file
   Future<File> decryptFileWithKey({
     required File cipherFile,
     required Uint8List contentKey,
-    required String contentNonce, // base64
+    required String contentNonce,
     String? outExtension,
   }) async {
     final encBytes = await cipherFile.readAsBytes();
-    if (encBytes.length < 16) throw Exception('Encrypted file too short');
+
+    if (encBytes.length <= 16) {
+      throw Exception('Invalid encrypted payload');
+    }
 
     final macBytes = encBytes.sublist(encBytes.length - 16);
     final cipherBytes = encBytes.sublist(0, encBytes.length - 16);
-    final nonceBytes = base64Decode(contentNonce);
 
-    final box = SecretBox(cipherBytes, nonce: nonceBytes, mac: Mac(macBytes));
-    final plain = await _aes.decrypt(box, secretKey: SecretKey(contentKey));
+    final box = SecretBox(
+      cipherBytes,
+      nonce: base64Decode(contentNonce),
+      mac: Mac(macBytes),
+    );
+
+    final plain = await _aes.decrypt(
+      box,
+      secretKey: SecretKeyData(contentKey), // ✅ FIX
+    );
 
     final dir = await _getTempDir();
-    final outFile = File('${dir.path}/${DateTime.now().millisecondsSinceEpoch}.${outExtension ?? 'jpg'}');
-    await outFile.writeAsBytes(plain, flush: true);
-    return outFile;
+    final out = File(
+      '${dir.path}/${DateTime.now().millisecondsSinceEpoch}.${outExtension ?? 'bin'}',
+    );
+
+    await out.writeAsBytes(plain, flush: true);
+    return out;
   }
 
-  /// Download encrypted file from url to temp file.
+  /// Download encrypted file to temp
   Future<File> downloadFileFromUrlToTemp(String url, {String? outName}) async {
-    // Try storage ref writeToFile
     try {
       final ref = _storage.refFromURL(url);
       final dir = await _getTempDir();
       final out = File('${dir.path}/${outName ?? DateTime.now().millisecondsSinceEpoch}.enc');
-      await out.create(recursive: true);
-      final task = ref.writeToFile(out);
-      await task.whenComplete(() => null);
+      await ref.writeToFile(out);
       return out;
     } catch (_) {
       final res = await http.get(Uri.parse(url));
-      if (res.statusCode != 200) throw Exception('HTTP ${res.statusCode}');
+      if (res.statusCode != 200) {
+        throw Exception('HTTP ${res.statusCode}');
+      }
       final dir = await _getTempDir();
       final out = File('${dir.path}/${outName ?? DateTime.now().millisecondsSinceEpoch}.enc');
       await out.writeAsBytes(res.bodyBytes, flush: true);
@@ -93,97 +108,134 @@ class MediaHelper {
     }
   }
 
+
   // -------------------------
   // encryptAndUpload (used by group repo)
   // -------------------------
   Future<Map<String, String>> encryptAndUpload({
-    required File file,
-    required Uint8List senderKey,
-    required String groupId,
-    required String folder,
-  }) async {
-    final bytes = await file.readAsBytes();
-    final contentKeySecret = await _aes.newSecretKey();
-    final contentKeyBytes = await contentKeySecret.extractBytes();
-    final contentNonce = _aes.newNonce();
+  required File file,
+  required Uint8List senderKey,
+  required String groupId,
+  required String folder,
+}) async {
+  final bytes = await file.readAsBytes();
 
-    final encMediaBox = await _aes.encrypt(
-      bytes,
-      secretKey: SecretKey(contentKeyBytes),
-      nonce: contentNonce,
-    );
+  // 1️⃣ Generate per-file content key
+  final contentKey = await _aes.newSecretKey();
+  final contentKeyBytes = Uint8List.fromList(await contentKey.extractBytes());
+  final contentNonce = _aes.newNonce();
 
-    final mediaCombined = Uint8List.fromList([...encMediaBox.cipherText, ...encMediaBox.mac.bytes]);
+  // 2️⃣ Encrypt media
+  final encMediaBox = await _aes.encrypt(
+    bytes,
+    secretKey: SecretKeyData(contentKeyBytes), // ✅ FIX
+    nonce: contentNonce,
+  );
 
-    final path = 'groupsEncrypted/$groupId/$folder/${DateTime.now().millisecondsSinceEpoch}.enc';
+  final mediaCombined = Uint8List.fromList([
+    ...encMediaBox.cipherText,
+    ...encMediaBox.mac.bytes,
+  ]);
 
-    final uploadResult = await _storage.ref(path).putData(mediaCombined);
-    final encUrl = await uploadResult.ref.getDownloadURL();
+  // 3️⃣ Upload encrypted bytes
+  final path =
+      'groupsEncrypted/$groupId/$folder/${DateTime.now().millisecondsSinceEpoch}.enc';
+  final uploadResult = await _storage.ref(path).putData(mediaCombined);
+  final encUrl = await uploadResult.ref.getDownloadURL();
 
-    final wrapNonce = _aes.newNonce();
-    final wrapBox = await _aes.encrypt(
-      contentKeyBytes,
-      secretKey: SecretKey(senderKey),
-      nonce: wrapNonce,
-    );
+  // 4️⃣ Wrap content key using senderKey
+  final wrapNonce = _aes.newNonce();
+  final wrapBox = await _aes.encrypt(
+    contentKeyBytes,
+    secretKey: SecretKeyData(senderKey), // ✅ FIX
+    nonce: wrapNonce,
+  );
 
-    final wrappedCombined = Uint8List.fromList([...wrapBox.cipherText, ...wrapBox.mac.bytes]);
+  final wrappedCombined = Uint8List.fromList([
+    ...wrapBox.cipherText,
+    ...wrapBox.mac.bytes,
+  ]);
 
-    return {
-      'url': encUrl,
-      'wrappedContentKey': base64Encode(wrappedCombined),
-      'wrappedContentKeyNonce': base64Encode(wrapNonce),
-      'contentNonce': base64Encode(contentNonce),
-    };
-  }
+  return {
+    'url': encUrl,
+    'wrappedContentKey': base64Encode(wrappedCombined),
+    'wrappedContentKeyNonce': base64Encode(wrapNonce),
+    'contentNonce': base64Encode(contentNonce),
+  };
+}
+
 
   // -------------------------
   // decryptAndSave (used by group chat)
   // -------------------------
   Future<File> decryptAndSave({
-    required String encryptedUrl,
-    required Uint8List senderKey,
-    required String wrappedKey,
-    required String mediaExt,
-    required String wrappedNonce,
-    required String contentNonce,
-  }) async {
-    final wrappedBytes = base64Decode(wrappedKey);
-    final wrapNonceBytes = base64Decode(wrappedNonce);
-
-    if (wrappedBytes.length < 16) throw Exception('wrapped key too short');
-
-    final macBytes = wrappedBytes.sublist(wrappedBytes.length - 16);
-    final cipherBytes = wrappedBytes.sublist(0, wrappedBytes.length - 16);
-
-    final wrapBox = SecretBox(cipherBytes, nonce: wrapNonceBytes, mac: Mac(macBytes));
-    final contentKeyBytes = await _aes.decrypt(wrapBox, secretKey: SecretKey(senderKey));
-
-    Uint8List? mediaEnc;
-    try {
-      final ref = _storage.refFromURL(encryptedUrl);
-      mediaEnc = await ref.getData(50 * 1024 * 1024); // 50MB
-    } catch (e) {
-      final res = await http.get(Uri.parse(encryptedUrl));
-      if (res.statusCode != 200) throw Exception('HTTP ${res.statusCode}');
-      mediaEnc = res.bodyBytes;
-    }
-
-    if (mediaEnc == null || mediaEnc.length < 16) throw Exception('Encrypted media invalid');
-
-    final mediaMacBytes = mediaEnc.sublist(mediaEnc.length - 16);
-    final mediaCipherBytes = mediaEnc.sublist(0, mediaEnc.length - 16);
-    final mediaNonceBytes = base64Decode(contentNonce);
-
-    final mediaBox = SecretBox(mediaCipherBytes, nonce: mediaNonceBytes, mac: Mac(mediaMacBytes));
-    final plain = await _aes.decrypt(mediaBox, secretKey: SecretKey(contentKeyBytes));
-
-    final dir = await _getTempDir();
-    final outFile = File(
-  '${dir.path}/${DateTime.now().millisecondsSinceEpoch}.$mediaExt',
-);
-
-    await outFile.writeAsBytes(plain, flush: true);
-    return outFile;
+  required String encryptedUrl,
+  required Uint8List senderKey,
+  required String wrappedKey,
+  required String mediaExt,
+  required String wrappedNonce,
+  required String contentNonce,
+}) async {
+  // 1️⃣ Unwrap content key
+  final wrappedBytes = base64Decode(wrappedKey);
+  if (wrappedBytes.length <= 16) {
+    throw Exception('Invalid wrapped key');
   }
+
+  final macBytes = wrappedBytes.sublist(wrappedBytes.length - 16);
+  final cipherBytes = wrappedBytes.sublist(0, wrappedBytes.length - 16);
+
+  final wrapBox = SecretBox(
+    cipherBytes,
+    nonce: base64Decode(wrappedNonce),
+    mac: Mac(macBytes),
+  );
+
+  final contentKeyBytes = await _aes.decrypt(
+    wrapBox,
+    secretKey: SecretKeyData(senderKey), // ✅ FIX
+  );
+
+  // 2️⃣ Download encrypted media
+  Uint8List mediaEnc;
+  try {
+    final ref = _storage.refFromURL(encryptedUrl);
+    mediaEnc = (await ref.getData(50 * 1024 * 1024))!;
+  } catch (_) {
+    final res = await http.get(Uri.parse(encryptedUrl));
+    if (res.statusCode != 200) {
+      throw Exception('HTTP ${res.statusCode}');
+    }
+    mediaEnc = res.bodyBytes;
+  }
+
+  if (mediaEnc.length <= 16) {
+    throw Exception('Invalid encrypted media');
+  }
+
+  // 3️⃣ Decrypt media
+  final mediaMacBytes = mediaEnc.sublist(mediaEnc.length - 16);
+  final mediaCipherBytes = mediaEnc.sublist(0, mediaEnc.length - 16);
+
+  final mediaBox = SecretBox(
+    mediaCipherBytes,
+    nonce: base64Decode(contentNonce),
+    mac: Mac(mediaMacBytes),
+  );
+
+  final plain = await _aes.decrypt(
+    mediaBox,
+    secretKey: SecretKeyData(contentKeyBytes), // ✅ FIX
+  );
+
+  // 4️⃣ Save file
+  final dir = await _getTempDir();
+  final outFile = File(
+    '${dir.path}/${DateTime.now().millisecondsSinceEpoch}.$mediaExt',
+  );
+
+  await outFile.writeAsBytes(plain, flush: true);
+  return outFile;
+}
+
 }

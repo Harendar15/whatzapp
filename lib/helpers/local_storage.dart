@@ -11,7 +11,7 @@ class LocalStorage {
   static const String _langSmallKey = 'langSmall';
   static const String _langCapKey = 'langCap';
   static const String _languageNameKey = 'languageName';
-
+  
   // Save & read logged-in user's UID
   static void saveMyUid(String uid) {
     _box.write(_myUidKey, uid);
@@ -34,7 +34,7 @@ class LocalStorage {
   static void saveCommunityId({required String id}) {
     _box.write(_communityIdKey, id);
   }
-
+  
   static String getCommunityID() {
     return _box.read(_communityIdKey) ?? '';
   }

@@ -32,6 +32,9 @@ class Message {
   final String? mediaKeyB64;
   final String? mediaNonceB64;
   final String senderDeviceId;
+  final String peerDeviceId;
+  final String? senderEphemeralPub;
+
 
 
   /// Reactions map
@@ -47,7 +50,9 @@ class Message {
     required this.isSeen,
     this.encryptedMediaUrl,
      required this.senderDeviceId,
+     required this.peerDeviceId,
     this.ciphertext,
+    this.senderEphemeralPub,
     this.iv,
     this.mac,
     this.sessionId,
@@ -85,17 +90,19 @@ class Message {
   String? encryptedMediaUrl,
   Map<String, List<String>>? reactions,
   String? senderDeviceId, // ✅ ADD
+  String? senderEphemeralPub,
 }) {
   return Message(
     senderId: senderId ?? this.senderId,
     recieverid: recieverid ?? this.recieverid,
     text: text ?? this.text,
+   senderEphemeralPub: senderEphemeralPub ?? this.senderEphemeralPub,
     type: type ?? this.type,
     timeSent: timeSent ?? this.timeSent,
     messageId: messageId ?? this.messageId,
     isSeen: isSeen ?? this.isSeen,
     senderDeviceId: senderDeviceId ?? this.senderDeviceId, // ✅ ADD
-
+    peerDeviceId: peerDeviceId,
     ciphertext: ciphertext ?? this.ciphertext,
     iv: iv ?? this.iv,
     mac: mac ?? this.mac,
@@ -130,6 +137,7 @@ class Message {
       'iv': iv,
       'mac': mac,
       'sessionId': sessionId,
+      'senderEphemeralPub': senderEphemeralPub,
       'fileUrl': fileUrl,
       'deleted': deleted,
       'edited': edited,
@@ -172,7 +180,8 @@ class Message {
     mac: map['mac'],
     sessionId: map['sessionId'],
     senderDeviceId: map['senderDeviceId'] ?? '',
-
+    peerDeviceId: map['peerDeviceId'] ?? '',
+    senderEphemeralPub: map['senderEphemeralPub'],
     fileUrl: map['fileUrl']?.toString(),
 
 

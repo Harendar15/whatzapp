@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="net.appdevs.adchat">
 
@@ -31,12 +31,12 @@
 
     <application
         android:name="${applicationName}"
-        android:label="AdChat"
+        android:label="WhatzApp"
         android:icon="@mipmap/ic_launcher"
         android:allowBackup="true"
         android:usesCleartextTraffic="true"
         android:fullBackupContent="false"
-        android:requestLegacyExternalStorage="true">
+        android:requestLegacyExternalStorage="false">
 
         <!-- Google Play Services / FCM config -->
         <meta-data
@@ -59,7 +59,6 @@
             android:name="com.google.firebase.messaging.default_notification_channel_id"
             android:value="high_importance_channel"/>
 
-        <meta-data android:name="flutterEmbedding" android:value="2" />
 
         <!-- Main activity -->
         <activity

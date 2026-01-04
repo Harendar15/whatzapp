@@ -29,6 +29,8 @@ class GroupMessage {
   final bool edited;
   final bool deleted;
   final String mediaExt;
+  final String mac;
+
 
 
   // Reply fields
@@ -45,6 +47,7 @@ class GroupMessage {
     required this.senderName,
     required this.type,
     required this.ciphertext,
+    required this.mac,
     required this.nonce,
     required this.fileUrl,
     required this.wrappedContentKey,
@@ -89,6 +92,8 @@ class GroupMessage {
       senderId: map['senderId'] ?? '',
       senderDeviceId: map['senderDeviceId'] ?? '',
       senderName: map['senderName'] ?? '',
+      mac: map['mac'] ?? '',
+
       isSavedToGallery: map['isSavedToGallery'] ?? false,
 
       /// FIXED: Convert string → enum

@@ -38,9 +38,18 @@ class _UserInformationScreenState
     extends ConsumerState<UserInformationScreen> {
   final TextEditingController nameController = TextEditingController();
   final aboutScreenController = Get.put(AboutScreenController());
-  final controller = Get.put(LoginController());
+  final controller = Get.find<LoginController>();
+
 
   File? image;
+  String phoneNumber = '';
+
+  @override
+  void initState() {
+    super.initState();
+    final args = Get.arguments ?? {};
+    phoneNumber = args['phoneNumber'] ?? '';
+  }
 
   @override
   void dispose() {
@@ -89,13 +98,6 @@ class _UserInformationScreenState
   try {
     final uid = FirebaseAuth.instance.currentUser!.uid;
 
-    final tempDoc = await FirebaseFirestore.instance
-        .collection('tempPhones')
-        .doc(uid)
-        .get();
-
-    final phoneNumber = tempDoc.data()?['phone'] ?? '';
-
     String profileUrl = "https://i.ibb.co/2M4d1j6/user.png";
 
     if (image != null) {
@@ -116,11 +118,6 @@ class _UserInformationScreenState
       profilePicUrl: profileUrl,
       context: context,
     );
-
-    await FirebaseFirestore.instance
-        .collection('tempPhones')
-        .doc(uid)
-        .delete();
 
     await PrefHelper.setUserInfoComplete();
 

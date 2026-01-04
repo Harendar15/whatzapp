@@ -39,12 +39,15 @@ class ChatList extends ConsumerStatefulWidget {
 class _ChatListState extends ConsumerState<ChatList> {
   final ScrollController messageController = ScrollController();
 
-  @override
-  void dispose() {
-    messageController.dispose();
-   
-    super.dispose();
-  }
+String getChatId(String a, String b) {
+  return a.compareTo(b) < 0 ? '${a}_$b' : '${b}_$a';
+}
+ 
+@override
+void dispose() {
+  messageController.dispose();
+  super.dispose();
+}
 
   // Swipe reply
   void messageSwipe(String preview, bool isMe, MessageModel msgType) {
@@ -52,6 +55,7 @@ class _ChatListState extends ConsumerState<ChatList> {
           (state) => MessageReply(preview, isMe, msgType),
         );
   }
+
 
   // Message actions bottom sheet
   void _showMessageActionsSheet(
@@ -86,12 +90,15 @@ class _ChatListState extends ConsumerState<ChatList> {
                       .map((e) => InkWell(
                             onTap: () async {
                               Navigator.pop(ctx);
-                              await chatController.toggleReaction(
-                                chatId: widget.recieverUserId,
-                                messageId: messageData.messageId,
-                                emoji: e,
-                                uid: currentUid,
-                              );
+                              final chatId = getChatId(currentUid, widget.recieverUserId);
+
+                            await chatController.toggleReaction(
+                              chatId: chatId,
+                              messageId: messageData.messageId,
+                              emoji: e,
+                              uid: currentUid,
+                            );
+
                             },
                             child: Text(e, style: const TextStyle(fontSize: 26)),
                           ))
@@ -151,11 +158,17 @@ class _ChatListState extends ConsumerState<ChatList> {
                 title: const Text('Delete'),
                 onTap: () async {
                   Navigator.pop(ctx);
+                  final chatId = getChatId(
+                    FirebaseAuth.instance.currentUser!.uid,
+                    widget.recieverUserId,
+                  );
+
                   await chatController.deleteMessage(
-                    chatId: widget.recieverUserId,
+                    chatId: chatId,
                     messageId: messageData.messageId,
                     isGroup: widget.isGroupChat,
                   );
+
                 },
               ),
             ],
@@ -167,16 +180,18 @@ class _ChatListState extends ConsumerState<ChatList> {
 
   @override
 
-Widget build(BuildContext context) {
-  final chatController = ref.read(chatControllerProvider);
-final Stream<List<Message>> stream = widget.isCommunityChat
-    ? chatController.communityChatStream(widget.recieverUserId)
-    : widget.isGroupChat
-        ? chatController.groupChatStream(widget.recieverUserId)
-        : ref
-            .read(chatRepositoryProvider)
-            .getChatStream(widget.recieverUserId);
-
+    Widget build(BuildContext context) {
+      final chatController = ref.read(chatControllerProvider);
+      final myUid = FirebaseAuth.instance.currentUser!.uid;
+      final chatId = getChatId(myUid, widget.recieverUserId);
+   final Stream<List<Message>> stream =
+    widget.isCommunityChat
+        ? chatController.communityChatStream(widget.recieverUserId)
+        : widget.isGroupChat
+            ? chatController.groupChatStream(widget.recieverUserId)
+            : ref
+                .watch(chatControllerProvider)
+                .chatStream(widget.recieverUserId);
 
   return StreamBuilder<bool>(
     stream: ref
@@ -188,14 +203,46 @@ final Stream<List<Message>> stream = widget.isCommunityChat
       return StreamBuilder<List<Message>>(
         stream: stream,
         builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const CustomLoader();
+        if (!snapshot.hasData) {
+            return const SizedBox(); // 👈 NO infinite loader
           }
 
-          final messages = snapshot.data ?? [];
+         final myUid = FirebaseAuth.instance.currentUser!.uid;
+          final chatId = getChatId(myUid, widget.recieverUserId);
+
+          final localMessages =
+              ref.watch(localMessageProvider)[chatId] ?? [];
+
+                      final remoteMessages = snapshot.data ?? [];
+                        // 🔥 Firestore sync ho gaya → local echo clear
+         Future.microtask(() {
+              if (!mounted) return;
+
+              final notifier = ref.read(localMessageProvider.notifier);
+              for (final m in remoteMessages) {
+                notifier.removeMessage(chatId, m.messageId);
+              }
+            });
+
+
+            // 🔥 Merge only this chat
+            final map = <String, Message>{};
+
+                    for (final m in localMessages) {
+                      map[m.messageId] = m;
+                    }
+
+                    for (final m in remoteMessages) {
+                      map[m.messageId] = m;
+                    }
+
+                    final messages = map.values.toList()
+                      ..sort((a, b) => a.timeSent.compareTo(b.timeSent));
+
 
           SchedulerBinding.instance.addPostFrameCallback((_) {
-            if (messageController.hasClients) {
+            if (!mounted) return;
+            if (messageController.hasClients && messageController.position.maxScrollExtent > 0) {
               try {
                 messageController.animateTo(
                   messageController.position.maxScrollExtent,
@@ -222,17 +269,25 @@ final Stream<List<Message>> stream = widget.isCommunityChat
               final timeSent = DateFormat.jm().format(msg.timeSent);
 
               // ✅ SAFE SEEN LOGIC (NO await here)
-              if (!isBlocked &&
-                  !msg.isSeen &&
-                  msg.recieverid == currentUid &&
-                  !widget.isGroupChat &&
-                  !widget.isCommunityChat) {
-                chatController.setChatMessageSeen(
-                  context,
-                  widget.recieverUserId,
-                  msg.messageId,
-                );
-              }
+              final isFirestoreMessage =
+                    msg.ciphertext != null &&
+                    msg.iv != null &&
+                    msg.mac != null;
+
+          if (!isBlocked &&
+              isFirestoreMessage &&        // ✅ ONLY REAL FIRESTORE MSG
+              !msg.isSeen &&
+              msg.recieverid == currentUid &&
+              !widget.isGroupChat &&
+              !widget.isCommunityChat) {
+
+            chatController.setChatMessageSeen(
+              context,
+              widget.recieverUserId,
+              msg.messageId,
+            );
+          }
+
 
               if (msg.deleted) {
                 return Center(
@@ -247,10 +302,7 @@ final Stream<List<Message>> stream = widget.isCommunityChat
                   ),
                 );
               }
-            final displayText = msg.type.isText  ? (msg.text == '[encrypted]' ? 'Decrypting...' : msg.text): '';
-
-
-
+              final displayText = msg.text;
               if (isMyMessage) {
                 return GestureDetector(
                   onLongPress: () =>
@@ -280,6 +332,7 @@ final Stream<List<Message>> stream = widget.isCommunityChat
                     message: displayText,
                     date: timeSent,
                     type: msg.type,
+                    fileUrl: msg.fileUrl,
                     username: msg.repliedTo,
                     repliedMessageType: msg.repliedMessageType,
                     repliedText: msg.repliedMessage,

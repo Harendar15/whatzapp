@@ -5,8 +5,10 @@ import '../../helpers/prefs_services.dart';
 import '../welcome/welcome_screen.dart';
 import '../../root_wrapper.dart';
 
+
 class SplashScreen extends StatefulWidget {
   static const routeName = '/splash';
+
 
   const SplashScreen({super.key});
 

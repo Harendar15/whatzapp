@@ -18,44 +18,49 @@ class SigningKeyManager {
   String _privKeyName(String uid, String deviceId) => '$_privKeyPrefix${uid}_$deviceId';
   String _pubKeyName(String uid, String deviceId) => '$_pubKeyPrefix${uid}_$deviceId';
 
-  Future<SimpleKeyPair> loadOrCreateSigningKey(String uid, String deviceId) async {
-    final privKeyName = _privKeyName(uid, deviceId);
-    final pubKeyName = _pubKeyName(uid, deviceId);
+Future<SimpleKeyPair> loadOrCreateSigningKey(
+  String uid,
+  String deviceId,
+) async {
+  final privKeyName = _privKeyName(uid, deviceId);
+  final pubKeyName = _pubKeyName(uid, deviceId);
 
-    final existingPriv = await _storage.read(key: privKeyName);
-    final existingPub = await _storage.read(key: pubKeyName);
+  final existingPriv = await _storage.read(key: privKeyName);
+  final existingPub = await _storage.read(key: pubKeyName);
 
-    if (existingPriv != null && existingPub != null) {
-      final privBytes = base64Decode(existingPriv);
-      final pubBytes = base64Decode(existingPub);
-
-      return SimpleKeyPairData(
-        Uint8List.fromList(privBytes),
-        publicKey: SimplePublicKey(
-          Uint8List.fromList(pubBytes),
-          type: KeyPairType.ed25519,
-        ),
-        type: KeyPairType.ed25519,
-      );
-    }
-
-    final kp = await _algo.newKeyPair();
-    final privBytes = await kp.extractPrivateKeyBytes();
-    final pub = await kp.extractPublicKey();
-    final bytes = pub.bytes;
-
-    await _storage.write(key: privKeyName, value: base64Encode(privBytes));
-    await _storage.write(key: pubKeyName, value: base64Encode(bytes));
-
+  if (existingPriv != null && existingPub != null) {
     return SimpleKeyPairData(
-      Uint8List.fromList(privBytes),
+      base64Decode(existingPriv), // ✅ seed
       publicKey: SimplePublicKey(
-        Uint8List.fromList(bytes),
+        base64Decode(existingPub),
         type: KeyPairType.ed25519,
       ),
       type: KeyPairType.ed25519,
     );
   }
+
+  // 🔐 Generate new keypair
+  final keyPair = await _algo.newKeyPair();
+  final privBytes = await keyPair.extractPrivateKeyBytes(); // ✅ seed
+  final pub = await keyPair.extractPublicKey();
+
+  await _storage.write(
+    key: privKeyName,
+    value: base64Encode(privBytes),
+  );
+  await _storage.write(
+    key: pubKeyName,
+    value: base64Encode(pub.bytes),
+  );
+
+  return SimpleKeyPairData(
+    privBytes,
+    publicKey: pub,
+    type: KeyPairType.ed25519,
+  );
+}
+
+
 
   Future<Uint8List> getPublicKeyBytes(String uid, String deviceId) async {
     final pubKeyName = _pubKeyName(uid, deviceId);

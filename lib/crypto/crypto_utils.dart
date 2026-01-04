@@ -13,6 +13,7 @@ Uint8List secureRandomBytes(int length) {
   final rnd = Random.secure();
   return Uint8List.fromList(List<int>.generate(length, (_) => rnd.nextInt(256)));
 }
+
 Future<Uint8List> deriveChainKey(
   Uint8List rootKey,
   String info,

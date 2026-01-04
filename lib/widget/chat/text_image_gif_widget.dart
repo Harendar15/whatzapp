@@ -1,5 +1,4 @@
 // lib/widget/chat/text_image_gif_widget.dart
-// FULLY FIXED – No more setState() after dispose errors 💥
 
 import 'dart:async';
 import 'dart:io';
@@ -7,7 +6,6 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
-import 'package:voice_message_package/voice_message_package.dart';
 
 import '../../../../models/message_model.dart';
 import '../../../../utils/custom_color.dart';
@@ -18,6 +16,7 @@ class TextImageGIFWidget extends StatefulWidget {
   final String message;
   final MessageModel type;
   final Color color;
+  final String? fileUrl;
   final bool me;
 
   const TextImageGIFWidget({
@@ -25,6 +24,7 @@ class TextImageGIFWidget extends StatefulWidget {
     required this.message,
     required this.type,
     required this.color,
+    this.fileUrl,
     this.me = false,
   });
 
@@ -33,45 +33,45 @@ class TextImageGIFWidget extends StatefulWidget {
 }
 
 class _TextImageGIFWidgetState extends State<TextImageGIFWidget> {
-  bool isPlaying = false;
-  final AudioPlayer audioPlayer = AudioPlayer();
+  final AudioPlayer _player = AudioPlayer();
+  bool _isPlaying = false;
 
-  Duration duration = Duration.zero;
-  Duration position = Duration.zero;
+  Duration _duration = Duration.zero;
+  Duration _position = Duration.zero;
 
   StreamSubscription? _stateSub;
-  StreamSubscription? _durationSub;
-  StreamSubscription? _positionSub;
+  StreamSubscription? _durSub;
+  StreamSubscription? _posSub;
 
-  bool get _isNetwork => widget.message.startsWith('http');
+  bool get _isNetwork =>
+      (widget.fileUrl ?? widget.message).startsWith('http');
 
   @override
   void initState() {
     super.initState();
 
-    // 🔥 FIX: cancel-safe state listeners
-    _stateSub = audioPlayer.onPlayerStateChanged.listen((state) {
+    _stateSub = _player.onPlayerStateChanged.listen((state) {
       if (!mounted) return;
-      setState(() => isPlaying = state == PlayerState.playing);
+      setState(() => _isPlaying = state == PlayerState.playing);
     });
 
-    _durationSub = audioPlayer.onDurationChanged.listen((d) {
+    _durSub = _player.onDurationChanged.listen((d) {
       if (!mounted) return;
-      setState(() => duration = d);
+      setState(() => _duration = d);
     });
 
-    _positionSub = audioPlayer.onPositionChanged.listen((p) {
+    _posSub = _player.onPositionChanged.listen((p) {
       if (!mounted) return;
-      setState(() => position = p);
+      setState(() => _position = p);
     });
   }
 
   @override
   void dispose() {
     _stateSub?.cancel();
-    _durationSub?.cancel();
-    _positionSub?.cancel();
-    audioPlayer.dispose();
+    _durSub?.cancel();
+    _posSub?.cancel();
+    _player.dispose();
     super.dispose();
   }
 
@@ -79,129 +79,118 @@ class _TextImageGIFWidgetState extends State<TextImageGIFWidget> {
   Widget build(BuildContext context) {
     switch (widget.type) {
       case MessageModel.text:
-        return _buildText();
+        return Text(widget.message,
+            style: TextStyle(
+                fontSize: Dimensions.mediumTextSize,
+                color: widget.color));
+
       case MessageModel.image:
-        return _buildImage(context);
+        return _image();
+
       case MessageModel.gif:
-        return _buildGif(context);
+        return _gif(context);
+
       case MessageModel.video:
-        return _buildVideo();
+        return _video();
+
       case MessageModel.audio:
-        return _buildAudio();
+        return _audio();
+
       default:
-        return _buildText();
+        return const SizedBox();
     }
   }
 
-  // ----------------------------- TEXT -----------------------------
-  Widget _buildText() {
-    return Text(
-      widget.message,
-      style: TextStyle(
-        fontSize: Dimensions.mediumTextSize,
-        color: widget.color,
-      ),
-    );
-  }
-
-  // ----------------------------- IMAGE -----------------------------
-  Widget _buildImage(BuildContext context) {
-    return InkWell(
-      onTap: () => _openZoomDialog(widget.message),
+  Widget _image() {
+    final src = widget.fileUrl ?? widget.message;
+    return GestureDetector(
+      onTap: () => _zoom(src),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(12),
-        child: SizedBox(
-          width: MediaQuery.of(context).size.width * 0.55,
-          child: AspectRatio(
-            aspectRatio: 4 / 5,
-            child: _isNetwork
-                ? CachedNetworkImage(imageUrl: widget.message, fit: BoxFit.cover)
-                : Image.file(File(widget.message), fit: BoxFit.cover),
-          ),
-        ),
+        child: CachedNetworkImage(imageUrl: src),
       ),
     );
   }
 
-  // ----------------------------- GIF -----------------------------
-  Widget _buildGif(BuildContext context) {
+  Widget _gif(BuildContext context) {
     final isVideoGif = widget.message.endsWith(".mp4");
-
-    return InkWell(
-      onTap: () => _openZoomDialog(widget.message),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(12),
-        child: SizedBox(
-          width: MediaQuery.of(context).size.width * 0.55,
-          child: AspectRatio(
-            aspectRatio: 1,
-            child: isVideoGif
-                ? VideoPlayerItem(videoUrl: widget.message)
-                : CachedNetworkImage(imageUrl: widget.message),
-          ),
-        ),
+    return SizedBox(
+      width: MediaQuery.of(context).size.width * 0.55,
+      child: AspectRatio(
+        aspectRatio: 1,
+        child: isVideoGif
+            ? VideoPlayerItem(videoUrl: widget.message)
+            : CachedNetworkImage(imageUrl: widget.message),
       ),
     );
   }
 
-  // ----------------------------- VIDEO -----------------------------
-  Widget _buildVideo() {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(12),
-      child: Stack(
-        alignment: Alignment.center,
+  Widget _video() {
+    final src = widget.fileUrl ?? widget.message;
+    return VideoPlayerItem(videoUrl: src);
+  }
+
+  // ✅ PURE AUDIOPLAYER VOICE NOTE
+  Widget _audio() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: widget.me
+            ? CustomColor.primaryColor
+            : CustomColor.greyColor.withOpacity(0.2),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          VideoPlayerItem(videoUrl: widget.message),
-          Container(
-            decoration: const BoxDecoration(
-              color: Colors.black54,
-              shape: BoxShape.circle,
+          IconButton(
+            icon: Icon(
+              _isPlaying ? Icons.pause : Icons.play_arrow,
+              color: widget.me ? Colors.white : Colors.black,
             ),
-            padding: const EdgeInsets.all(12),
-            child:
-                const Icon(Icons.play_arrow, size: 32, color: Colors.white),
+            onPressed: _toggleAudio,
+          ),
+          Text(
+            _format(_position),
+            style: TextStyle(
+              color: widget.me ? Colors.white : Colors.black,
+            ),
           ),
         ],
       ),
     );
   }
 
-  // ----------------------------- AUDIO -----------------------------
-  Widget _buildAudio() {
-    return VoiceMessage(
-      audioSrc: widget.message,
-      played: true,
-      me: widget.me,
-      meBgColor: CustomColor.primaryColor,
-      meFgColor: Colors.white,
-      mePlayIconColor: CustomColor.appBarColor,
-      contactBgColor: Get.isDarkMode
-          ? CustomColor.appBarColor.withOpacity(0.6)
-          : CustomColor.white.withOpacity(0.6),
-      contactFgColor: Get.isDarkMode
-          ? Colors.white70
-          : CustomColor.black.withOpacity(0.8),
-      contactPlayIconColor: CustomColor.appBarColor,
-      noiseColor: Colors.white,
-      noiseBgColor: Colors.transparent,
-      onPlay: () {},
-    );
+  Future<void> _toggleAudio() async {
+    final src = widget.fileUrl ?? widget.message;
+
+    if (_isPlaying) {
+      await _player.pause();
+    } else {
+      if (_isNetwork) {
+        await _player.play(UrlSource(src));
+      } else {
+        await _player.play(DeviceFileSource(src));
+      }
+    }
   }
 
-  // ----------------------------- ZOOM VIEW -----------------------------
-  void _openZoomDialog(String path) {
-    Get.to(
-      () => Scaffold(
-        backgroundColor: Colors.black,
-        body: Center(
-          child: InteractiveViewer(
-            maxScale: 10,
-            child:
-                _isNetwork ? CachedNetworkImage(imageUrl: path) : Image.file(File(path)),
+  String _format(Duration d) {
+    final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return "$m:$s";
+  }
+
+  void _zoom(String path) {
+    Get.to(() => Scaffold(
+          backgroundColor: Colors.black,
+          body: Center(
+            child: InteractiveViewer(
+              child: _isNetwork
+                  ? CachedNetworkImage(imageUrl: path)
+                  : Image.file(File(path)),
+            ),
           ),
-        ),
-      ),
-      fullscreenDialog: true,
-    );
+        ));
   }
 }

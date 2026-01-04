@@ -1,7 +1,8 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:get/get.dart';
-
+import 'confirm_status_screen.dart';
 import 'package:adchat/controller/controller/status_controller.dart';
 import 'package:adchat/helpers/local_storage.dart';
 import 'package:adchat/widget/safe_image.dart';
@@ -24,13 +25,19 @@ class _StatusScreenState extends ConsumerState<StatusScreen> {
     });
   }
 
-  void _openPicker(BuildContext context) {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      builder: (_) => imagePickerBottomSheetWidget(context),
-    );
-  }
+void _openPicker(BuildContext context) async {
+  final file = await showModalBottomSheet<File>(
+    context: context,
+    backgroundColor: Colors.transparent,
+    builder: (_) => imagePickerBottomSheetWidget(context),
+  );
+
+  if (file == null) return;
+
+  Get.to(() => ConfirmStatusScreen(file: file));
+
+}
+
 
   @override
   Widget build(BuildContext context) {

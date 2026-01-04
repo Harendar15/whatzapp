@@ -24,7 +24,6 @@ class _SelectContactForCallScreenState
   @override
   Widget build(BuildContext context) {
     final history = Get.find<CallHistoryController>();
-    final callController = Get.find<CallController>();
     final me = FirebaseAuth.instance.currentUser!;
     final q = _search.text.toLowerCase();
 
@@ -78,7 +77,6 @@ class _SelectContactForCallScreenState
                   onPressed: () async {
                     final repo = CallRepository();
 
-                    // ✅ ALWAYS CREATE ENCRYPTED CALL
                     final encryptedCall = await repo.createEncryptedCall(
                       model: CallModel(
                         callId: DateTime.now().millisecondsSinceEpoch.toString(),
@@ -89,7 +87,6 @@ class _SelectContactForCallScreenState
                         receiverName: u.name,
                         receiverImage: u.profilePic,
 
-                        // ✅ STABLE CHANNEL NAME
                         channelName: me.uid.compareTo(u.uid) < 0
                             ? '${me.uid}_${u.uid}'
                             : '${u.uid}_${me.uid}',
@@ -98,48 +95,56 @@ class _SelectContactForCallScreenState
                         type: 'audio',
                         status: 'ringing',
                         timestamp: DateTime.now().millisecondsSinceEpoch,
-
-                        // 🔐 WILL BE FILLED BY repo.createEncryptedCall
                         mediaKey: '',
                         members: [me.uid, u.uid],
                       ),
                     );
 
-                    await callController.startCall(call: encryptedCall);
-                  },
-                ),
-
-                IconButton(
-                  icon: const Icon(Icons.videocam),
-                  onPressed: () async {
-                    final repo = CallRepository();
-
-                    final encryptedCall = await repo.createEncryptedCall(
-                      model: CallModel(
-                        callId: DateTime.now().millisecondsSinceEpoch.toString(),
-                        callerId: me.uid,
-                        callerName: me.phoneNumber ?? 'Me',
-                        callerImage: '',
-                        receiverId: u.uid,
-                        receiverName: u.name,
-                        receiverImage: u.profilePic,
-
-                        channelName: me.uid.compareTo(u.uid) < 0
-                            ? '${me.uid}_${u.uid}'
-                            : '${u.uid}_${me.uid}',
-
-                        token: '',
-                        type: 'video', // ✅ FIXED
-                        status: 'ringing',
-                        timestamp: DateTime.now().millisecondsSinceEpoch,
-                        mediaKey: '',
-                        members: [me.uid, u.uid],
-                      ),
+                    // ✅ ONLY NAVIGATE
+                    Get.toNamed(
+                      '/outgoing-call',
+                      arguments: encryptedCall.toMap(),
                     );
-
-                    await callController.startCall(call: encryptedCall);
                   },
                 ),
+
+
+               IconButton(
+                      icon: const Icon(Icons.videocam),
+                      onPressed: () async {
+                        final repo = CallRepository();
+
+                        final encryptedCall = await repo.createEncryptedCall(
+                          model: CallModel(
+                            callId: DateTime.now().millisecondsSinceEpoch.toString(),
+                            callerId: me.uid,
+                            callerName: me.phoneNumber ?? 'Me',
+                            callerImage: '',
+                            receiverId: u.uid,
+                            receiverName: u.name,
+                            receiverImage: u.profilePic,
+
+                            channelName: me.uid.compareTo(u.uid) < 0
+                                ? '${me.uid}_${u.uid}'
+                                : '${u.uid}_${me.uid}',
+
+                            token: '',
+                            type: 'video',
+                            status: 'ringing',
+                            timestamp: DateTime.now().millisecondsSinceEpoch,
+                            mediaKey: '',
+                            members: [me.uid, u.uid],
+                          ),
+                        );
+
+                        // ✅ ONLY NAVIGATE
+                        Get.toNamed(
+                          '/outgoing-call',
+                          arguments: encryptedCall.toMap(),
+                        );
+                      },
+                    ),
+
 
                   ],
                 ),

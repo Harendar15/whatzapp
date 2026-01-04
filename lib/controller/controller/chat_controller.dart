@@ -14,10 +14,44 @@ import '../../models/chat_contact_model.dart';
 import '../../models/group.dart';
 import '../../models/community.dart';
 
-final chatControllerProvider = Provider<ChatController>((ref) {
-  final repo = ref.read(chatRepositoryProvider);
-  return ChatController(repo, ref);
+final chatControllerProvider =
+  Provider<ChatController>((ref) {
+    final repo = ref.read(chatRepositoryProvider);
+    return ChatController(repo, ref);
 });
+final localMessageProvider =
+  StateNotifierProvider<LocalMessageController, Map<String, List<Message>>>(
+    (_) => LocalMessageController(),
+  );
+
+class LocalMessageController
+    extends StateNotifier<Map<String, List<Message>>> {
+  LocalMessageController() : super({});
+
+  void add(String chatId, Message m) {
+    final list = state[chatId] ?? [];
+    state = {
+      ...state,
+      chatId: [...list, m],
+    };
+  }
+
+  void clearChat(String chatId) {
+    final newState = {...state};
+    newState.remove(chatId);
+    state = newState;
+  }
+   void removeMessage(String chatId, String messageId) {
+    final list = state[chatId] ?? [];
+    state = {
+      ...state,
+      chatId: list
+          .where((m) => m.messageId != messageId)
+          .toList(),
+    };
+  }
+}
+
 
 class ChatController {
   final ChatRepository repo;
@@ -27,7 +61,10 @@ class ChatController {
   ChatController(this.repo, this.ref);
 
   // Streams
-  Stream<List<Message>> chatStream(String otherUid) => repo.getChatStream(otherUid);
+ Stream<List<Message>> chatStream(String otherUid) =>
+    repo.getChatStream(otherUid);
+
+
   Stream<List<Message>> groupChatStream(String groupId) => repo.getGroupChatStream(groupId);
   Stream<List<Message>> communityChatStream(String commId) => repo.getCommunityChats(commId);
 
@@ -62,15 +99,16 @@ class ChatController {
   final senderUser = await _loadCurrentUserModel();
   if (senderUser == null) return;
 
-  await repo.sendTextMessage(
-    context: context,
-    text: text,
-    recieverUserId: recieverUserId,
-    senderUser: senderUser,
-    messageReply: messageReply,
-    isGroupChat: isGroupChat,
-    isCommunityChat: isCommunityChat,
-  );
+   await repo.sendTextMessage(
+  
+  text: text,
+  recieverUserId: recieverUserId,
+  senderUser: senderUser,
+ 
+);
+
+
+
 }
 
   

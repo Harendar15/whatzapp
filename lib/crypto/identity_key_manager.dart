@@ -154,6 +154,10 @@ Future<SimplePublicKey?> fetchAnyDevicePublicKey(String uid) async {
     required Map<String, dynamic> wrapped,
   }) async {
    final seedB64 = await secureStorage.read(key: _seedKey(uid, deviceId));
+if (seedB64 == null) {
+  throw Exception('Identity seed missing for device');
+}
+
 final myPair = await _x25519.newKeyPairFromSeed(base64Decode(seedB64!));
 
 

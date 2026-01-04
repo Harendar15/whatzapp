@@ -1,11 +1,9 @@
-// lib/views/auth/otp_screen.dart
-
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:get/get.dart';
+
 import 'package:adchat/controller/auth/login_controller.dart';
 import 'package:adchat/controller/repo/auth_repository.dart';
-import 'package:adchat/utils/custom_color.dart';
 import 'package:adchat/widget/custom_loader.dart';
 
 class OTPScreen extends ConsumerStatefulWidget {
@@ -17,63 +15,114 @@ class OTPScreen extends ConsumerStatefulWidget {
 }
 
 class _OTPScreenState extends ConsumerState<OTPScreen> {
-  String verificationId = "";
-  String phoneNumber = "";
+  late final String verificationId;
+  late final String phoneNumber;
+
   final TextEditingController otpController = TextEditingController();
 
   @override
   void initState() {
     super.initState();
-    final args = Get.arguments ?? {};
-    verificationId = args["verificationId"] ?? "";
-    phoneNumber = args["phoneNumber"] ?? "";
+
+    final args = Get.arguments as Map<String, dynamic>?;
+
+    verificationId = args?['verificationId'] ?? '';
+    phoneNumber = args?['phoneNumber'] ?? '';
+
+    if (verificationId.isEmpty) {
+      debugPrint('❌ OTP Screen opened without verificationId');
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final controller = Get.find<LoginController>();
+    final loginController = Get.find<LoginController>();
 
     return Scaffold(
-      appBar: AppBar(title: Text("Verify OTP")),
+      appBar: AppBar(title: const Text("Verify OTP")),
       body: Obx(
-        () => controller.isVerifyCode.value
+        () => loginController.isVerifyCode.value
             ? const CustomLoader()
-            : Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Text("Enter the OTP sent to $phoneNumber"),
-                  Padding(
-                    padding: const EdgeInsets.all(20),
-                    child: TextField(
-                      controller: otpController,
-                      maxLength: 6,
-                      keyboardType: TextInputType.number,
-                      textAlign: TextAlign.center,
+            : Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      "Enter OTP sent to",
+                      style: Theme.of(context).textTheme.titleMedium,
                     ),
-                  ),
-                  ElevatedButton(
-                    child: Text("Verify"),
-                    onPressed: () async {
-                      final otp = otpController.text.trim();
-                      if (otp.length == 6) {
+                    const SizedBox(height: 4),
+                    Text(
+                      phoneNumber,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+
+                    const SizedBox(height: 24),
+
+                    TextField(
+                      controller: otpController,
+                      keyboardType: TextInputType.number,
+                      maxLength: 6,
+                      textAlign: TextAlign.center,
+                      decoration: const InputDecoration(
+                        border: OutlineInputBorder(),
+                        hintText: "••••••",
+                      ),
+                    ),
+
+                    const SizedBox(height: 16),
+
+                    // ✅ VERIFY BUTTON
+                    ElevatedButton(
+                      onPressed: () async {
+                        final otp = otpController.text.trim();
+
+                        if (verificationId.isEmpty) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content:
+                                  Text("OTP expired. Please resend OTP."),
+                            ),
+                          );
+                          return;
+                        }
+
+                        if (otp.length != 6) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text("Enter valid 6-digit OTP"),
+                            ),
+                          );
+                          return;
+                        }
+
                         await ref.read(authRepositoryProvider).verifyOTP(
                               context: context,
                               otp: otp,
                               verificationId: verificationId,
                               phoneNumber: phoneNumber,
                             );
-                      }
-                    },
-                  ),
-                  TextButton(
-                    child: Text("Resend OTP"),
-                    onPressed: () {
-                      ref
-                          .read(authRepositoryProvider)
-                          .resendOtp(context: context, phoneNumber: phoneNumber);
-                    },
-                  ),
-                ],
+                      },
+                      child: const Text("Verify OTP"),
+                    ),
+
+                    const SizedBox(height: 12),
+
+                    // ✅ RESEND OTP BUTTON
+                    TextButton(
+                      onPressed: () async {
+                        await ref.read(authRepositoryProvider).resendOtp(
+                              context: context,
+                              phoneNumber: phoneNumber,
+                            );
+                      },
+                      child: const Text("Resend OTP"),
+                    ),
+                  ],
+                ),
               ),
       ),
     );

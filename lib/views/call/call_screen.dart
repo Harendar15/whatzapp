@@ -37,7 +37,8 @@ class CallScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
       final String type = args['type'] ?? 'audio';
-      controller.callType.value = type;
+     
+  
     final otherName = _buildOtherName();
     final otherImage = _buildOtherImage();
 

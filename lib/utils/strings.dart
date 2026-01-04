@@ -5,8 +5,8 @@ class Strings {
   static const String opposite = 'Opposite';
   static const String typeAMessage = 'Message';
 
-  static const String appName = 'Adchat';
-  static const String appVersion = '1.0';
+  static const String appName = 'WhatzApp';
+  static const String appVersion = '0.9.0';
   static const String dot = '•';
 
   // common

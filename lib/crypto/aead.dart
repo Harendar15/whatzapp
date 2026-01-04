@@ -42,17 +42,51 @@ Future<Uint8List> decryptAesGcm(
   String b64Mac, {
   Uint8List? aad,
 }) async {
-  final box = SecretBox(
-    base64Decode(b64Cipher),
-    nonce: base64Decode(b64Iv),
-    mac: Mac(base64Decode(b64Mac)),
-  );
+  try {
+    // Decode all components with validation
+    final cipherBytes = base64Decode(b64Cipher);
+    final nonceBytes = base64Decode(b64Iv);
+    final macBytes = base64Decode(b64Mac);
 
-  final plain = await _aead.decrypt(
-    box,
-    secretKey: SecretKey(key),
-    aad: aad ?? Uint8List(0),
-  );
+    // Validate nonce length (must be 12 bytes for GCM)
+    if (nonceBytes.length != 12) {
+      throw Exception(
+        'Invalid nonce length: ${nonceBytes.length} (expected 12)',
+      );
+    }
 
-  return Uint8List.fromList(plain);
+    // Validate MAC length (must be 16 bytes for AES-GCM)
+    if (macBytes.length != 16) {
+      throw Exception(
+        'Invalid MAC length: ${macBytes.length} (expected 16). '
+        'This usually means corrupted data or wrong key. '
+        'b64Mac="$b64Mac", decoded=${macBytes.length} bytes',
+      );
+    }
+
+    final box = SecretBox(
+      cipherBytes,
+      nonce: nonceBytes,
+      mac: Mac(macBytes),
+    );
+
+    final plain = await _aead.decrypt(
+      box,
+      secretKey: SecretKey(key),
+      aad: aad ?? Uint8List(0),
+    );
+
+    return Uint8List.fromList(plain);
+  } on SecretBoxAuthenticationError catch (e) {
+    throw Exception(
+      'SecretBox authentication failed: $e. '
+      'This means the key or encrypted data is incorrect. '
+      'Key length: ${key.length} bytes, '
+      'Cipher length: ${base64Decode(b64Cipher).length} bytes, '
+      'IV length: ${base64Decode(b64Iv).length} bytes, '
+      'MAC length: ${base64Decode(b64Mac).length} bytes',
+    );
+  } catch (e) {
+    throw Exception('Decryption error: $e');
+  }
 }

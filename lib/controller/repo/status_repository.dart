@@ -463,6 +463,19 @@ Future<void> _deleteStatusDocAndSubcollections(String ownerUid) async {
 
     });
   }
+  Future<List<String>> resolveContactUidsFromPhoneNumbers(
+  List<String> phoneNumbers,
+) async {
+  if (phoneNumbers.isEmpty) return [];
+
+  final snap = await _firestore
+      .collection('users')
+      .where('phoneNumber', whereIn: phoneNumbers)
+      .get();
+
+  return snap.docs.map((d) => d.id).toList();
+}
+
   Future<void> markStatusSeen({
   required String ownerUid,
   required int mediaIndex,

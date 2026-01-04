@@ -27,7 +27,8 @@ class LoginScreen extends ConsumerStatefulWidget {
 }
 
 class _LoginScreenState extends ConsumerState<LoginScreen> {
-  final controller = Get.put(LoginController());
+ final controller = Get.find<LoginController>();
+
 
   var underlineInputBorder = const UnderlineInputBorder(
     borderSide: BorderSide(color: CustomColor.primaryColor),
@@ -37,20 +38,24 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: _appBarWidget(context),
-      bottomSheet: _buttonWidget(context),
       body: _bodyWidget(context),
     );
   }
 
 Widget _bodyWidget(BuildContext context) {
   return SingleChildScrollView(
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.center,
-      children: [
-        _hintTextWidget(context),
-        _countryPickerWidget(context),
-        _inputFieldWidget(context),
-      ],
+    child: Padding(
+      padding: EdgeInsets.symmetric(horizontal: Dimensions.marginSize),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          _hintTextWidget(context),
+          _countryPickerWidget(context),
+          _inputFieldWidget(context),
+          SizedBox(height: Dimensions.marginSize * 2),
+          _buttonWidget(context),
+        ],
+      ),
     ),
   );
 }
@@ -107,9 +112,9 @@ Widget _bodyWidget(BuildContext context) {
               ),
               readOnly: true,
               onTap: () {
-                if (!controller.isDemoAccount.value) {
+            
                   controller.pickCountry(context);
-                }
+
               },
             );
           }),
@@ -121,7 +126,6 @@ Widget _bodyWidget(BuildContext context) {
   Widget _buttonWidget(BuildContext context) {
     return Container(
       margin: EdgeInsets.symmetric(
-        horizontal: Dimensions.marginSize * 4,
         vertical: Dimensions.marginSize,
       ),
       child: Obx(
@@ -132,7 +136,9 @@ Widget _bodyWidget(BuildContext context) {
                   // validate & sign in
                   String phoneNumber = controller.phoneController.text.trim();
                   if (phoneNumber.isEmpty) {
-                    showSnackBar(context: context, content: 'Fill out all the fields');
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Fill out all the fields')),
+                    );
                     return;
                   }
                   // use Riverpod provider to sign in
@@ -175,7 +181,7 @@ Widget _bodyWidget(BuildContext context) {
                 Expanded(
                   flex: 3,
                   child: TextField(
-                    readOnly: controller.isDemoAccount.value,
+
                     keyboardType: TextInputType.number,
                     inputFormatters: <TextInputFormatter>[
                       FilteringTextInputFormatter.digitsOnly

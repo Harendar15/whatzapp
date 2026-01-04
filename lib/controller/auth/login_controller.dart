@@ -5,6 +5,7 @@ import 'package:get/get.dart';
 class LoginController extends GetxController {
   RxString countryName = 'India'.obs;
   RxString countryCode = '91'.obs;
+  final verificationId = ''.obs;
   final phoneController = TextEditingController();
 
   final isLoading = false.obs;

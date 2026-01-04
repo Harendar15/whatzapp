@@ -17,16 +17,17 @@ import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
-import 'package:flutter_sound/flutter_sound.dart';
+import 'package:record/record.dart';
 import 'package:get/get.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-
+import 'package:uuid/uuid.dart';
 import 'icon_creation_widget.dart';
 import '../../controller/repo/chat_repo.dart';
-
+import 'package:adchat/models/message.dart';
+import 'package:adchat/helpers/local_storage.dart';
 class ChatFieldWidget extends ConsumerStatefulWidget {
   final String recieverUserId;
   final bool isGroupChat;
@@ -51,7 +52,7 @@ class _ChatFieldWidgetState extends ConsumerState<ChatFieldWidget> {
   final TextEditingController _messageController = TextEditingController();
 
   // 🔊 Recorder
-  final FlutterSoundRecorder _recorder = FlutterSoundRecorder();
+  final AudioRecorder _recorder = AudioRecorder();
   bool _isRecorderReady = false;
   bool isRecording = false;
   String? _recordedFilePath;
@@ -81,7 +82,10 @@ class _ChatFieldWidgetState extends ConsumerState<ChatFieldWidget> {
       return;
     }
 
-    await _recorder.openRecorder();
+    final hasPermission = await _recorder.hasPermission();
+      if (!hasPermission) {
+        debugPrint('Mic permission not granted');
+      }
     if (!mounted) return;
 
     setState(() {
@@ -111,14 +115,17 @@ class _ChatFieldWidgetState extends ConsumerState<ChatFieldWidget> {
   }
 
   // ---------------------- TYPING INDICATOR ----------------------
-  Future<void> _setTyping(bool isTyping) async {
+ // ---------------------- TYPING INDICATOR ----------------------
+Future<void> _setTyping(bool isTyping) async {
+  if (!mounted) return;
+
   final uid = FirebaseAuth.instance.currentUser?.uid;
   if (uid == null) return;
 
-  // ❌ group / community skip
+  // ❌ Skip group / community
   if (widget.isGroupChat || widget.isCommunityChat) return;
 
-  // 🔒 BLOCK CHECK (ADD THIS)
+  // 🔒 Block check
   final isBlocked = await ref
       .read(chatRepositoryProvider)
       .isBlocked(widget.recieverUserId)
@@ -130,24 +137,29 @@ class _ChatFieldWidgetState extends ConsumerState<ChatFieldWidget> {
   final chatId =
       uid.compareTo(other) < 0 ? '${uid}_$other' : '${other}_$uid';
 
-  await FirebaseFirestore.instance.collection('typing').doc(chatId).set(
-    {
-      'typingBy': uid,
-      'isTyping': isTyping,
-      'updatedAt': FieldValue.serverTimestamp(),
-    },
-    SetOptions(merge: true),
-  );
+  await FirebaseFirestore.instance
+      .collection('typing')
+      .doc(chatId)
+      .set({
+    'typingBy': uid,
+    'isTyping': isTyping,
+    'updatedAt': FieldValue.serverTimestamp(),
+  }, SetOptions(merge: true));
 
   _typingTimer?.cancel();
+
   if (isTyping) {
     _typingTimer = Timer(const Duration(seconds: 3), () {
-      _setTyping(false);
+      if (mounted) _setTyping(false);
     });
   }
 }
 
 
+String getChatId(String a, String b) {
+  return a.compareTo(b) < 0 ? '${a}_$b' : '${b}_$a';
+}
+ 
   // 📨 Send text or start/stop voice note
 void sendMessage() async {
   if (!mounted || _sending) return;
@@ -164,15 +176,53 @@ void sendMessage() async {
       await _setTyping(false);
 
      final reply = ref.read(messageReplyProvider);
+    
+    final myUid = FirebaseAuth.instance.currentUser!.uid;
+    final messageId = const Uuid().v1();
 
-      await ref.read(chatControllerProvider).sendTextMessage(
-        context,
-        text,
-        widget.recieverUserId,
-        widget.isGroupChat,
-        widget.isCommunityChat,
-        messageReply: reply,
-      );
+    final senderDeviceId = LocalStorage.getDeviceId();
+    if (senderDeviceId == null || senderDeviceId.isEmpty) return;
+
+// 🔑 peerDeviceId UI ke liye required hai
+// local echo me hum same rakh sakte hain
+    final peerDeviceId = senderDeviceId;
+
+// 🔥 1️⃣ LOCAL ECHO (sender ko real msg dikhane ke liye)
+final chatId = getChatId(myUid, widget.recieverUserId);
+
+ref.read(localMessageProvider.notifier).add(
+  chatId,
+  Message(
+    senderId: myUid,
+    recieverid: widget.recieverUserId,
+    senderDeviceId: senderDeviceId,
+    peerDeviceId: peerDeviceId,
+    text: text,
+    type: MessageModel.text,
+    timeSent: DateTime.now(),
+    messageId: messageId,
+    isSeen: false,
+    reactions: const {},
+  ),
+);
+
+
+
+// 🔐 2️⃣ ENCRYPTED SEND (Firestore)
+// 🔥 fire-and-forget (NO await)
+unawaited(
+  ref.read(chatControllerProvider).sendTextMessage(
+    context,
+    text,
+    widget.recieverUserId,
+    widget.isGroupChat,
+    widget.isCommunityChat,
+    messageReply: reply,
+  ),
+);
+
+
+      ref.read(messageReplyProvider.state).update((_) => null);
 
 
       if (!mounted) return;
@@ -184,32 +234,32 @@ void sendMessage() async {
     }
 
     // ---------- VOICE ----------
-    if (!_isRecorderReady) return;
+    // ---------- VOICE ----------
+if (isRecording) {
+  await _recorder.stop();
+  setState(() => isRecording = false);
 
-    final tempDir = await getTemporaryDirectory();
-    final path =
-        '${tempDir.path}/voice_${DateTime.now().millisecondsSinceEpoch}.aac';
+  if (_recordedFilePath != null &&
+      File(_recordedFilePath!).existsSync()) {
+    sendFileMessage(File(_recordedFilePath!), MessageModel.audio);
+  }
+} else {
+  final dir = await getTemporaryDirectory();
+  _recordedFilePath =
+      '${dir.path}/voice_${DateTime.now().millisecondsSinceEpoch}.m4a';
 
-    if (isRecording) {
-      await _recorder.stopRecorder();
-      final filePath = _recordedFilePath;
+  await _recorder.start(
+    const RecordConfig(
+      encoder: AudioEncoder.aacLc,
+      bitRate: 128000,
+      sampleRate: 44100,
+    ),
+    path: _recordedFilePath!,
+  );
 
-      if (!mounted) return;
-      setState(() => isRecording = false);
+  setState(() => isRecording = true);
+}
 
-      if (filePath != null && File(filePath).existsSync()) {
-        sendFileMessage(File(filePath), MessageModel.audio);
-      }
-    } else {
-      _recordedFilePath = path;
-      await _recorder.startRecorder(
-        toFile: path,
-        codec: Codec.aacADTS,
-      );
-
-      if (!mounted) return;
-      setState(() => isRecording = true);
-    }
   } finally {
     _sending = false; // ✅ CRITICAL
   }
@@ -318,22 +368,40 @@ Future<void> sendFileMessage(File file, MessageModel messageEnum) async {
     );
   }
 
-  @override
+
+
 
 @override
 void dispose() {
-  _setTyping(false); // ✅ ADD THIS (CRITICAL)
   _typingTimer?.cancel();
+
+  if (FirebaseAuth.instance.currentUser != null &&
+      !widget.isGroupChat &&
+      !widget.isCommunityChat) {
+    final uid = FirebaseAuth.instance.currentUser!.uid;
+    final other = widget.recieverUserId;
+    final chatId =
+        uid.compareTo(other) < 0 ? '${uid}_$other' : '${other}_$uid';
+
+    FirebaseFirestore.instance.collection('typing').doc(chatId).set({
+      'isTyping': false,
+      'typingBy': uid,
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
   _messageController.dispose();
   focusNode.dispose();
 
-  if (_recorder.isRecording) {
-    _recorder.stopRecorder();
-  }
+ if (isRecording) {
+  _recorder.stop();
+}
+_recorder.dispose();
 
-  _recorder.closeRecorder();
   super.dispose();
 }
+
+
 
 
   @override

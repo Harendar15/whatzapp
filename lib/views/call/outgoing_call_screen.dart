@@ -1,7 +1,9 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
+
 import 'package:adchat/controller/call/call_controller.dart';
+import 'package:adchat/models/call_model.dart';
 import 'package:adchat/widget/safe_image.dart';
 
 class OutgoingCallScreen extends StatelessWidget {
@@ -9,15 +11,28 @@ class OutgoingCallScreen extends StatelessWidget {
 
   OutgoingCallScreen({super.key});
 
-  final args = Get.arguments;
   final CallController controller = Get.find<CallController>();
 
   @override
   Widget build(BuildContext context) {
+    final Map<String, dynamic> args =
+        (Get.arguments ?? {}) as Map<String, dynamic>;
+
     final name = args["receiverName"] ?? "Unknown";
     final image = args["receiverImage"] ?? "";
     final isVideo = args["type"] == "video";
     final callId = args["callId"];
+
+    /// 🔥 START CALL ONLY ONCE AFTER UI LOAD
+WidgetsBinding.instance.addPostFrameCallback((_) {
+  if (!controller.isInCall.value) {
+    controller.startCall(
+      call: CallModel.fromMap(args),
+    );
+  }
+});
+
+
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -35,7 +50,6 @@ class OutgoingCallScreen extends StatelessWidget {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                /// Caller Image
                 SafeImage(
                   url: image,
                   size: 140,
@@ -62,27 +76,26 @@ class OutgoingCallScreen extends StatelessWidget {
 
                 const SizedBox(height: 120),
 
-                /// ⭐ WhatsApp-style controls row
+                /// Controls
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                   children: [
-                    // ----------- Mute -----------
+                    /// MUTE
                     Obx(() {
                       return _roundButton(
                         icon: controller.isMuted.value
                             ? Icons.mic_off
                             : Icons.mic,
                         label: controller.isMuted.value ? "Unmute" : "Mute",
-                       onTap: () {
-                          if (controller.isInCall.value) {
+                        onTap: () {
+                          if (controller.engine != null) {
                             controller.toggleMute();
                           }
                         },
-
                       );
                     }),
 
-                    // ----------- Speaker -----------
+                    /// SPEAKER
                     Obx(() {
                       return _roundButton(
                         icon: controller.isSpeakerOn.value
@@ -95,7 +108,7 @@ class OutgoingCallScreen extends StatelessWidget {
                       );
                     }),
 
-                    // ----------- Video Toggle (only for video calls)-----------
+                    /// VIDEO
                     if (isVideo)
                       Obx(() {
                         return _roundButton(
@@ -113,7 +126,7 @@ class OutgoingCallScreen extends StatelessWidget {
 
                 const SizedBox(height: 50),
 
-                /// END CALL BUTTON (center)
+                /// END CALL
                 GestureDetector(
                   onTap: () => controller.endCall(callId),
                   child: Container(
@@ -130,8 +143,11 @@ class OutgoingCallScreen extends StatelessWidget {
                         )
                       ],
                     ),
-                    child: const Icon(Icons.call_end,
-                        color: Colors.white, size: 36),
+                    child: const Icon(
+                      Icons.call_end,
+                      color: Colors.white,
+                      size: 36,
+                    ),
                   ),
                 ),
               ],
@@ -142,9 +158,6 @@ class OutgoingCallScreen extends StatelessWidget {
     );
   }
 
-  /// ----------------------------------------------------
-  /// WhatsApp Style Round Button (Mute / Speaker / Camera)
-  /// ----------------------------------------------------
   Widget _roundButton({
     required IconData icon,
     required String label,

@@ -1,15 +1,14 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_sound/flutter_sound.dart';
-import 'package:intl/intl.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
 
 class AudioMessagePlayer extends StatefulWidget {
-  final String url;      // Firebase download URL
-  final bool isMe;       // Whether the message is mine
+  final String url;   // Firebase download URL
+  final bool isMe;
 
   const AudioMessagePlayer({
     super.key,
@@ -22,17 +21,21 @@ class AudioMessagePlayer extends StatefulWidget {
 }
 
 class _AudioMessagePlayerState extends State<AudioMessagePlayer> {
-  final FlutterSoundPlayer _player = FlutterSoundPlayer();
+  final AudioPlayer _player = AudioPlayer();
+
   bool _isReady = false;
   bool _isPlaying = false;
 
-  Duration _current = Duration.zero;
-  Duration _total = Duration.zero;
+  Duration _position = Duration.zero;
+  Duration _duration = Duration.zero;
 
-  StreamSubscription? _sub;
+  StreamSubscription? _stateSub;
+  StreamSubscription? _posSub;
+  StreamSubscription? _durSub;
 
   String? _localPath;
 
+  // ---------------- INIT ----------------
   @override
   void initState() {
     super.initState();
@@ -40,71 +43,68 @@ class _AudioMessagePlayerState extends State<AudioMessagePlayer> {
   }
 
   Future<void> _init() async {
-    await _player.openPlayer();
-    _isReady = true;
+    _localPath = await _cacheAudio(widget.url);
 
-    // Download audio locally once → fast playback
-    _localPath = await _downloadToLocal(widget.url);
-
-    // Listen for playback position changes
-    _sub = _player.onProgress!.listen((event) {
+    _stateSub = _player.onPlayerStateChanged.listen((state) {
       if (!mounted) return;
-      setState(() {
-        _current = event.position;
-        _total = event.duration;
-      });
+      setState(() => _isPlaying = state == PlayerState.playing);
     });
 
-    setState(() {});
+    _posSub = _player.onPositionChanged.listen((pos) {
+      if (!mounted) return;
+      setState(() => _position = pos);
+    });
+
+    _durSub = _player.onDurationChanged.listen((dur) {
+      if (!mounted) return;
+      setState(() => _duration = dur);
+    });
+
+    setState(() => _isReady = true);
   }
 
-  Future<String> _downloadToLocal(String url) async {
+  // ---------------- CACHE AUDIO ----------------
+  Future<String> _cacheAudio(String url) async {
     final dir = await getTemporaryDirectory();
-    final filePath = "${dir.path}/audio_${DateTime.now().millisecondsSinceEpoch}.aac";
+    final path =
+        '${dir.path}/audio_${DateTime.now().millisecondsSinceEpoch}.aac';
 
     final bytes = await http.readBytes(Uri.parse(url));
-    final file = File(filePath);
+    final file = File(path);
     await file.writeAsBytes(bytes);
-    return filePath;
+
+    return path;
   }
 
-  Future<void> _togglePlay() async {
-    if (!_isReady) return;
+  // ---------------- PLAY / PAUSE ----------------
+  Future<void> _togglePlayback() async {
+    if (!_isReady || _localPath == null) return;
 
     if (_isPlaying) {
-      await _player.pausePlayer();
-      setState(() => _isPlaying = false);
-      return;
+      await _player.pause();
+    } else {
+      await _player.play(DeviceFileSource(_localPath!));
     }
-
-    await _player.startPlayer(
-      fromURI: _localPath,
-      codec: Codec.aacADTS,
-      whenFinished: () {
-        if (!mounted) return;
-        setState(() {
-          _isPlaying = false;
-          _current = Duration.zero;
-        });
-      },
-    );
-
-    setState(() => _isPlaying = true);
   }
 
+  // ---------------- FORMAT TIME ----------------
   String _format(Duration d) {
-    final mm = d.inMinutes.remainder(60).toString().padLeft(2, '0');
-    final ss = d.inSeconds.remainder(60).toString().padLeft(2, '0');
-    return "$mm:$ss";
+    final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return '$m:$s';
   }
 
+  // ---------------- CLEANUP ----------------
   @override
   void dispose() {
-    _sub?.cancel();
-    _player.closePlayer();
+    _stateSub?.cancel();
+    _posSub?.cancel();
+    _durSub?.cancel();
+    _player.dispose();
     super.dispose();
   }
 
+  // ---------------- UI ----------------
   @override
   Widget build(BuildContext context) {
     return Container(
@@ -115,9 +115,9 @@ class _AudioMessagePlayerState extends State<AudioMessagePlayer> {
       ),
       child: Row(
         children: [
-          // PLAY / PAUSE BUTTON
+          // ▶ PLAY / PAUSE
           GestureDetector(
-            onTap: _togglePlay,
+            onTap: _togglePlayback,
             child: CircleAvatar(
               radius: 18,
               backgroundColor: Colors.green,
@@ -131,31 +131,24 @@ class _AudioMessagePlayerState extends State<AudioMessagePlayer> {
 
           const SizedBox(width: 12),
 
-          // SEEKBAR (Slider)
+          // 🎚 SEEK BAR
           Expanded(
-            child: SliderTheme(
-              data: SliderTheme.of(context).copyWith(
-                trackHeight: 2,
-                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 5),
-              ),
-              child: Slider(
-                value: _current.inMilliseconds.toDouble(),
-                max: _total.inMilliseconds.toDouble() == 0
-                    ? 1
-                    : _total.inMilliseconds.toDouble(),
-                onChanged: (v) async {
-                  final pos = Duration(milliseconds: v.toInt());
-                  await _player.seekToPlayer(pos);
-                },
-              ),
+            child: Slider(
+              value: _position.inMilliseconds.toDouble(),
+              max: _duration.inMilliseconds == 0
+                  ? 1
+                  : _duration.inMilliseconds.toDouble(),
+              onChanged: (v) {
+                _player.seek(Duration(milliseconds: v.toInt()));
+              },
             ),
           ),
 
-          const SizedBox(width: 10),
+          const SizedBox(width: 8),
 
-          // TIME TEXT
+          // ⏱ TIME
           Text(
-            _format(_current),
+            _format(_position),
             style: const TextStyle(fontSize: 12),
           ),
         ],

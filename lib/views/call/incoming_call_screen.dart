@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:adchat/controller/call/call_controller.dart';
 import 'package:adchat/widget/safe_image.dart';
-
+import 'package:adchat/views/call/outgoing_call_screen.dart';
 class IncomingCallScreen extends StatefulWidget {
   static const String routeName = '/incoming-call-screen';
 
@@ -131,7 +131,18 @@ class _IncomingCallScreenState extends State<IncomingCallScreen>
                       icon: Icons.call,
                       color: Colors.green,
                       label: "Answer",
-                      onTap: () => callController.acceptCall(callId),
+                    onTap: () async {
+  if (!callController.isInCall.value) {
+    await callController.acceptCall(callId);
+
+    Get.offNamed(
+      OutgoingCallScreen.routeName,
+      arguments: data,
+    );
+  }
+}
+
+
                     )
                   ],
                 )

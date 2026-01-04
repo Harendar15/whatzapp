@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -29,8 +28,7 @@ import 'views/call/select_contact_for_call_screen.dart';
 import 'views/group/create_group_screen.dart';
 import 'views/group/add_group_member_screen.dart';
 import 'views/group/group_chat_screen.dart';
-import 'views/call/call_screen.dart';
-import 'package:adchat/crypto/session_manager.dart';
+
 // Controllers
 import 'controller/auth/login_controller.dart';
 import 'controller/call/call_controller.dart';
@@ -45,21 +43,18 @@ import 'call_routes.dart';
 
 import 'package:uuid/uuid.dart';
 
-/// ---------------------------------------------------------------
-/// 🔹 BACKGROUND FCM HANDLER (TOP LEVEL ONLY)
-/// ---------------------------------------------------------------
+/// ------------------------------------------------------------
+/// 🔹 BACKGROUND FCM HANDLER (TOP-LEVEL ONLY)
+/// ------------------------------------------------------------
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
-
-  debugPrint("📩 BG Notification → ${message.notification?.title}");
-  debugPrint("📩 BG DATA → ${message.data}");
 }
 
-/// ---------------------------------------------------------------
+/// ------------------------------------------------------------
 /// 🔹 LOCAL NOTIFICATION SETUP
-/// ---------------------------------------------------------------
+/// ------------------------------------------------------------
 final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
     FlutterLocalNotificationsPlugin();
 
@@ -81,9 +76,6 @@ Future<void> setupNotifications() async {
     },
   );
 
-  // -------------------------------
-  // CHAT NOTIFICATION CHANNEL
-  // -------------------------------
   const AndroidNotificationChannel chatChannel =
       AndroidNotificationChannel(
     'adchat_channel',
@@ -92,9 +84,6 @@ Future<void> setupNotifications() async {
     importance: Importance.high,
   );
 
-  // -------------------------------
-  // 📞 INCOMING CALL CHANNEL
-  // -------------------------------
   const AndroidNotificationChannel incomingCallChannel =
       AndroidNotificationChannel(
     'incoming_calls',
@@ -102,8 +91,6 @@ Future<void> setupNotifications() async {
     description: 'Audio & Video calls',
     importance: Importance.max,
     playSound: true,
-    sound: RawResourceAndroidNotificationSound('ringtone'),
-    enableVibration: true,
   );
 
   final androidPlugin =
@@ -120,10 +107,7 @@ Future<void> setupNotifications() async {
     badge: true,
     sound: true,
   );
-  
-  // -------------------------------
-  // FOREGROUND CHAT NOTIFICATION
-  // -------------------------------
+
   FirebaseMessaging.onMessage.listen((RemoteMessage message) {
     final notification = message.notification;
     final android = message.notification?.android;
@@ -146,9 +130,6 @@ Future<void> setupNotifications() async {
     }
   });
 
-  // -------------------------------
-  // NOTIFICATION TAP HANDLER
-  // -------------------------------
   FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
     if (Get.isRegistered<PushNotificationController>()) {
       Get.find<PushNotificationController>()
@@ -157,118 +138,83 @@ Future<void> setupNotifications() async {
   });
 }
 
-/// ---------------------------------------------------------------
-/// 🔹 FIREBASE SAFE INIT
-/// ---------------------------------------------------------------
-Future<void> initializeFirebaseSafe() async {
-  if (Firebase.apps.isEmpty) {
-    await Firebase.initializeApp(
-      options: DefaultFirebaseOptions.currentPlatform,
-    );
-  }
-}
-
-/// ---------------------------------------------------------------
+/// ------------------------------------------------------------
 /// 🔹 MAIN
-/// ---------------------------------------------------------------
+/// ------------------------------------------------------------
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
 
-  await initializeFirebaseSafe();
-  await GetStorage.init();
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
 
-  // Device ID
-  final existing = LocalStorage.getDeviceId();
-  if (existing == null || existing.isEmpty) {
-    final newId = const Uuid().v4();
-    LocalStorage.saveDeviceId(newId);
-    debugPrint("🆔 DeviceId generated: $newId");
-  }
+  await GetStorage.init(); // ✅ MUST BE HERE
 
-  // Controllers
-  Get.put(LoginController());
-  Get.put(CallController(), permanent: true);
-  Get.put(PushNotificationController(), permanent: true); // ✅ IMPORTANT
-
-  // Background FCM
   FirebaseMessaging.onBackgroundMessage(
     firebaseMessagingBackgroundHandler,
   );
 
-  await setupNotifications();
-
   runApp(const ProviderScope(child: MyApp()));
 }
 
-/// ---------------------------------------------------------------
+
+/// ------------------------------------------------------------
 /// 🔹 APP ROOT
-/// ---------------------------------------------------------------
-class MyApp extends StatelessWidget {
+/// ------------------------------------------------------------
+class MyApp extends StatefulWidget {
   const MyApp({super.key});
 
   @override
+  State<MyApp> createState() => _MyAppState();
+}
+
+class _MyAppState extends State<MyApp> {
+  bool _initialized = false;
+
+  @override
   Widget build(BuildContext context) {
+    if (!_initialized) {
+      // ✅ SAFE INIT AFTER FIRST FRAME
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        await _initApp();
+        if (mounted) setState(() => _initialized = true);
+      });
+
+      return const MaterialApp(
+        home: Scaffold(
+          body: Center(child: CircularProgressIndicator()),
+        ),
+      );
+    }
+
     return ScreenUtilInit(
       designSize: const Size(360, 800),
       minTextAdapt: true,
       builder: (_, __) => GetMaterialApp(
         title: 'AdChat',
         debugShowCheckedModeBanner: false,
-
         theme: Themes.light,
         darkTheme: Themes.dark,
-
         translations: LocalString(),
         locale: const Locale("en", "US"),
-
         home: const SplashScreen(),
-
         getPages: [
-          GetPage(
-              name: SplashScreen.routeName,
-              page: () => const SplashScreen()),
-          GetPage(
-              name: WelcomeScreen.routeName,
-              page: () => const WelcomeScreen()),
-          GetPage(
-              name: LoginScreen.routeName,
-              page: () => const LoginScreen()),
-          GetPage(
-              name: OTPScreen.routeName,
-              page: () => const OTPScreen()),
+          GetPage(name: SplashScreen.routeName, page: () => const SplashScreen()),
+          GetPage(name: WelcomeScreen.routeName, page: () => const WelcomeScreen()),
+          GetPage(name: LoginScreen.routeName, page: () => const LoginScreen()),
+          GetPage(name: OTPScreen.routeName, page: () => const OTPScreen()),
           GetPage(name: '/home', page: () => const HomeScreen()),
-          GetPage(
-              name: '/user-information',
-              page: () => const UserInformationScreen()),
-
+          GetPage(name: '/user-information', page: () => const UserInformationScreen()),
           ...CallRoutes.pages,
-
-          GetPage(
-              name: SelectContactsScreen.routeName,
-              page: () => const SelectContactsScreen()),
-          GetPage(
-              name: SettingsScreen.routeName,
-              page: () => SettingsScreen()),
-          GetPage(
-              name: StatusContactsScreen.routeName,
-              page: () => const StatusContactsScreen()),
-          GetPage(
-              name: SelectContactForCallScreen.routeName,
-              page: () => const SelectContactForCallScreen()),
-
+          GetPage(name: SelectContactsScreen.routeName, page: () => const SelectContactsScreen()),
+          GetPage(name: SettingsScreen.routeName, page: () => SettingsScreen()),
+          GetPage(name: StatusContactsScreen.routeName, page: () => const StatusContactsScreen()),
+          GetPage(name: SelectContactForCallScreen.routeName, page: () => const SelectContactForCallScreen()),
           GetPage(
             name: ConfirmStatusScreen.routeName,
-            page: () {
-              final file = Get.arguments as File;
-              return ConfirmStatusScreen(file: file);
-            },
+            page: () => ConfirmStatusScreen(file: Get.arguments as File),
           ),
-
-          GetPage(
-              name: '/create-group-screen',
-              page: () => const CreateGroupScreen()),
-
+          GetPage(name: '/create-group-screen', page: () => const CreateGroupScreen()),
           GetPage(
             name: '/add-group-members',
             page: () {
@@ -280,7 +226,6 @@ class MyApp extends StatelessWidget {
               );
             },
           ),
-
           GetPage(
             name: '/group-chat',
             page: () {
@@ -291,20 +236,26 @@ class MyApp extends StatelessWidget {
               );
             },
           ),
-
-          GetPage(
-              name: CallTabScreen.routeName,
-              page: () => CallTabScreen()),
+          GetPage(name: CallTabScreen.routeName, page: () => CallTabScreen()),
         ],
-
-        builder: (context, widget) {
-          return MediaQuery(
-            data: MediaQuery.of(context)
-                .copyWith(textScaleFactor: 1.0),
-            child: widget ?? const SizedBox.shrink(),
-          );
-        },
       ),
     );
+  }
+
+  Future<void> _initApp() async {
+  
+
+    final existing = LocalStorage.getDeviceId();
+    if (existing == null || existing.isEmpty) {
+      final id = const Uuid().v4();
+      LocalStorage.saveDeviceId(id);
+      debugPrint("🆔 DeviceId generated: $id");
+    }
+
+    Get.put(LoginController(), permanent: true);
+    Get.put(CallController(), permanent: true);
+    Get.put(PushNotificationController(), permanent: true);
+
+    await setupNotifications();
   }
 }

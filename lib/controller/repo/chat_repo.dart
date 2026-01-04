@@ -8,7 +8,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:get/get.dart';
 import 'package:uuid/uuid.dart';
-import 'package:cryptography/cryptography.dart';
 import '../../crypto/media_e2e_helper.dart';
 import '../../models/chat_contact_model.dart';
 import '../../models/community.dart';
@@ -20,13 +19,18 @@ import '../../models/message_reply_model.dart';
 import '../../models/user_model.dart';
 import 'package:flutter/foundation.dart'; // ✅ REQUIRED
 import 'package:path/path.dart' as p;
-
+import '../../crypto/ensure_session_for_peer.dart';
+import '../../crypto/session_guard.dart';
 import '../notification/push_notification_controller.dart';
 import '../storage/common_firebase_storage_repository.dart';
-
 import '../../crypto/identity_key_manager.dart';
-import '../../crypto/key_manager.dart';
 import '../../crypto/session_manager.dart' as sm;
+import '../../crypto/message_queue.dart';
+import '../../crypto/isolate/text_encrypt_isolate.dart';
+import '../../crypto/isolate/text_decrypt_isolate.dart';
+import '../../crypto/isolate/media_encrypt_isolate.dart';
+import '../../crypto/isolate/media_decrypt_isolate.dart';
+import '../../crypto/decrypt_queue.dart';
 
 final chatRepositoryProvider = Provider(
   (ref) => ChatRepository(
@@ -38,7 +42,14 @@ final chatRepositoryProvider = Provider(
 class ChatRepository {
   final FirebaseFirestore firestore;
   final FirebaseAuth auth;
-  final Set<String> _sessionCache = {};
+  final Map<String, String> _decryptedCache = {};
+  final Set<String> _decryptInProgress = {};
+  final Set<String> _sessionEnsured = {};
+  final MessageQueue _sendQueue = MessageQueue();
+  final DecryptQueue _decryptQueue = DecryptQueue();
+
+
+
 
 
   ChatRepository({
@@ -49,147 +60,52 @@ class ChatRepository {
   final _push = Get.put(PushNotificationController());
 
   User? get currentUser => auth.currentUser;
+  bool _disposed = false;
+
+    String getChatId(String a, String b) {
+      return a.compareTo(b) < 0 ? '${a}_$b' : '${b}_$a';
+    }
 
   // ============================================================
   // 🔐 SESSION (STRICT – NO FALLBACK)
   // ============================================================
-   Future<void> _ensureSession({
-    required String myUid,
-    required String peerUid,
-  }) async {
-    final deviceId = LocalStorage.getDeviceId();
-    if (deviceId == null || deviceId.isEmpty) {
-      throw Exception('❌ DeviceId missing');
-    }
+// Future<void> _ensureSession({
+//   required String myUid,
+//   required String peerUid,
+// }) async {
+//   final myDeviceId = LocalStorage.getDeviceId();
+//   if (myDeviceId == null || myDeviceId.isEmpty) {
+//     debugPrint('❌ DeviceId missing');
+//     return;
+//   }
 
-    final sessionId = sm.canonicalPeer(myUid, peerUid);
-    final cacheKey = '$sessionId-$deviceId';
+ 
+  
+//   // 2️⃣ Persistent session check
+//   final existing = await sm.loadSession(myUid, peerUid, myDeviceId);
+//   if (existing != null) {
+  
+//     debugPrint('✅ Existing session loaded with $peerUid');
+//     return;
+//   }
 
-    if (_sessionCache.contains(cacheKey)) return;
-
-    final existing = await sm.loadSession(myUid, peerUid, deviceId);
-    if (existing != null) {
-      _sessionCache.add(cacheKey);
-      return;
-    }
-
-    final identity = IdentityKeyManager(firestore: firestore);
-    final keyManager = KeyManager(firestore: firestore);
-
-    // 1️⃣ Ensure my identity exists
-    await identity.loadOrCreateIdentityKey(myUid, deviceId);
-
-    // 2️⃣ Load my DH keypair
-    final SimpleKeyPair myKeyPair =
-        await keyManager.loadLocalKeyPair(
-      uid: myUid,
-      deviceId: deviceId,
-    );
-
-        final deviceSnap = await firestore
-          .collection('userKeys')
-          .doc(peerUid)
-          .collection('devices')
-          .limit(1)
-          .get();
-
-      if (deviceSnap.docs.isEmpty) {
-        throw Exception('❌ Peer has no registered device');
-      }
-
-      final deviceDoc = deviceSnap.docs.first;
-      final peerDeviceId = deviceDoc.id;
-
-      final peerPub = SimplePublicKey(
-        base64Decode(deviceDoc['pubKey']),
-        type: KeyPairType.x25519,
-      );
-
-
-      await sm.initSession(
-        myUid: myUid,
-        peerId: peerUid,
-        myKeyPair: myKeyPair,
-        deviceId: deviceId,
-        peerDeviceId: peerDeviceId, // ✅ ADD
-        peerPub: peerPub,
-      );
-
-
-    final verify = await sm.loadSession(myUid, peerUid, deviceId);
-    if (verify == null) {
-      throw Exception('❌ Session init failed');
-    }
-
-    _sessionCache.add(cacheKey);
-  }
-
-
-  /// ============================================================
-  /// 🔓 DECRYPT MESSAGE (CLIENT ONLY)
-  /// ============================================================
-  Future<String?> decryptMessageForMe(Message m) async {
-    if (m.ciphertext == null || m.iv == null || m.mac == null) return null;
-
-    final myUid = currentUser?.uid;
-    if (myUid == null) return null;
-
-    final peerUid =
-        m.senderId == myUid ? m.recieverid : m.senderId;
-
-    try {
-      await _ensureSession(
-        myUid: myUid,
-        peerUid: peerUid,
-      );
-
-     final identity = IdentityKeyManager(firestore: firestore);
-
-// 🔐 fetch peer identity key
-final SimplePublicKey? peerIdentityPub =
-    await identity.fetchDevicePublicKey(
-      peerUid,
-      m.senderDeviceId, // ✅ MUST COME FROM MESSAGE
-    );
-
-
-if (peerIdentityPub == null) {
-  throw Exception('❌ Peer identity key missing');
-}
-
-final plain = await sm.decryptMessage(
-  myUid,
-  peerUid,
-  LocalStorage.getDeviceId()!,
-  peerIdentityPub, // ✅ ADD THIS
-  {
-    'ciphertext': m.ciphertext!,
-    'iv': m.iv!,
-    'mac': m.mac!,
-  },
-);
-
-
-      return utf8.decode(plain);
-    } catch (e) {
-  debugPrint('❌ Decrypt failed: $e');
-  return null;
-}
-
-    }
-
+//   // 🚫 DO NOT CREATE SESSION HERE
+//   debugPrint('⏳ No secure session yet with $peerUid');
+//   return;
+// }
   // ============================================================
-  // 📡 STREAMS
-  // ============================================================
-  Stream<List<Message>> getChatStream(String otherUid) {
-  final uid = currentUser?.uid;
-  if (uid == null) return const Stream.empty();
+// 📡 1-to-1 CHAT STREAM (WITH DECRYPT)
+// ============================================================
+Stream<List<Message>> getChatStream(String otherUid) {
+  final user = auth.currentUser;
+  if (user == null) return const Stream.empty();
+
+  final myUid = user.uid;
+  final chatId = getChatId(myUid, otherUid);
 
   return firestore
-      .collection('users')
-      .doc(uid)
       .collection('chats')
-      .doc(otherUid)
+      .doc(chatId)
       .collection('messages')
       .orderBy('timeSent')
       .snapshots()
@@ -199,21 +115,219 @@ final plain = await sm.decryptMessage(
         for (final d in snap.docs) {
           final m = Message.fromMap(d.data());
 
-          if (m.senderId == uid) {
-            // ✅ OWN MESSAGE → show normally
+          // sender side → no decrypt
+          if (m.senderId == myUid) {
             out.add(m);
-          } else {
-            // 🔐 RECEIVED MESSAGE → decrypt
-            final plain = await decryptMessageForMe(m);
-            out.add(
-              plain != null ? m.copyWith(text: plain) : m,
-            );
+            continue;
           }
+
+          // receiver side → decrypt once
+          if (!_decryptedCache.containsKey(m.messageId) &&
+              !_decryptInProgress.contains(m.messageId)) {
+
+            _decryptInProgress.add(m.messageId);
+
+            _decryptQueue.enqueue(() async {
+              if (_disposed) return;
+
+              final plain = await decryptMessageForMe(m);
+              if (plain != null) {
+                _decryptedCache[m.messageId] = plain;
+              }
+
+              _decryptInProgress.remove(m.messageId);
+            });
+          }
+
+          out.add(
+            _decryptedCache.containsKey(m.messageId)
+                ? m.copyWith(text: _decryptedCache[m.messageId]!)
+                : m,
+          );
         }
+
         return out;
       });
 }
 
+
+void clearE2ECaches() {
+  _decryptedCache.clear();
+  _decryptInProgress.clear();
+  _sessionEnsured.clear();
+}
+
+void clearQueues() {
+  _sendQueue.clear();
+}
+
+// void clearDecryptQueue() {
+//   _decryptInProgress.clear();
+//   _sessionEnsured.clear();
+// }
+
+void disposeRepo() {
+  _disposed = true;
+
+  _sendQueue.dispose();     // 🔥 CRITICAL
+  _decryptQueue.dispose();  // 🔥 CRITICAL
+
+  _decryptedCache.clear();
+  _decryptInProgress.clear();
+  _sessionEnsured.clear();
+}
+
+  /// ============================================================
+  /// 🔓 DECRYPT MESSAGE (CLIENT ONLY)
+  /// ============================================================
+Future<String?> decryptMessageForMe(Message m) async {
+  try {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      debugPrint('⛔ decrypt skipped (user logged out)');
+      return null;
+    }
+
+    final myUid = user.uid;
+    final deviceId = LocalStorage.getDeviceId();
+
+    if (deviceId == null || deviceId.isEmpty) {
+      debugPrint('⛔ decrypt skipped (deviceId missing)');
+      return null;
+    }
+
+    if (m.ciphertext == null || m.iv == null || m.mac == null) {
+      debugPrint('⛔ decrypt skipped (invalid payload)');
+      return null;
+    }
+
+    // base64 validation
+    try {
+      base64Decode(m.ciphertext!);
+      base64Decode(m.iv!);
+      base64Decode(m.mac!);
+    } catch (_) {
+      debugPrint('⛔ decrypt skipped (corrupted base64)');
+      return null;
+    }
+
+    final peerUid =
+        m.senderId == myUid ? (m.recieverid ?? '') : m.senderId;
+
+    if (peerUid.isEmpty) {
+      debugPrint('⛔ decrypt skipped (peerUid empty)');
+      return null;
+    }
+
+    final senderDeviceId = m.senderDeviceId;
+    if (senderDeviceId.isEmpty) {
+      return null;
+    }
+    final identity = IdentityKeyManager(firestore: firestore);
+
+    final peerPub = await identity.fetchDevicePublicKey(
+      peerUid,
+      senderDeviceId,
+    );
+
+    if (peerPub == null) {
+      debugPrint('⛔ decrypt skipped: peer public key missing in Firestore');
+      return null; // 👈 THIS IS THE FIX
+    }
+
+
+    final sessionKey = '$myUid-$peerUid-$senderDeviceId';
+
+          if (!_sessionEnsured.contains(sessionKey)) {
+            await SessionGuard.run(
+              key: sessionKey,
+              action: () async {
+                await ensureSessionForPeer(
+                  firestore: firestore,
+                  myUid: myUid,
+                  peerUid: peerUid,
+                  peerDeviceId: senderDeviceId,
+                );
+              },
+            );
+            _sessionEnsured.add(sessionKey);
+          }
+
+
+  sm.SessionRecord? session = await sm.loadSession(
+  myUid,
+  peerUid,
+  deviceId,
+  senderDeviceId,
+);
+
+if (session == null) {
+  await SessionGuard.run(
+    key: 'rekey-$myUid-$peerUid-$senderDeviceId',
+    action: () async {
+      await ensureSessionForPeer(
+        firestore: firestore,
+        myUid: myUid,
+        peerUid: peerUid,
+        peerDeviceId: senderDeviceId,
+      );
+    },
+  );
+
+  session = await sm.loadSession(
+    myUid,
+    peerUid,
+    deviceId,
+    senderDeviceId,
+  );
+}
+
+if (session == null) {
+  debugPrint('⛔ decrypt skipped: session still missing');
+  return null;
+}
+
+if (session.peerDeviceId != senderDeviceId) {
+  debugPrint(
+    '⛔ decrypt skipped: session-device mismatch '
+    'expected=$senderDeviceId actual=${session.peerDeviceId}',
+  );
+  return null;
+}
+
+      if (m.senderDeviceId.isEmpty) {
+  debugPrint('⛔ decrypt skipped (senderDeviceId empty)');
+  return null;
+}
+
+
+    final plainBytes = await compute(
+  decryptTextIsolate,
+  TextDecryptParams(
+    myUid: myUid,
+    peerUid: peerUid,
+    deviceId: deviceId,
+    peerDeviceId: senderDeviceId,
+    payload: {
+      'ciphertext': m.ciphertext!,
+      'iv': m.iv!,
+      'mac': m.mac!,
+    },
+  ),
+);
+
+    if (plainBytes.isEmpty) return null;
+
+    return utf8.decode(
+      plainBytes,
+      allowMalformed: true, // 🔥 CRITICAL
+    );
+
+  } catch (e) {
+    debugPrint('⛔ decrypt skipped (MAC/session mismatch) :  $e');
+    return null;
+  }
+}
 
   Stream<List<Message>> getGroupChatStream(String groupId) {
     return firestore
@@ -261,6 +375,7 @@ final plain = await sm.decryptMessage(
   required bool isCommunityChat,
   Map<String, String>? e2eEnvelope,
   String? fileUrl,
+  MessageReply? messageReply,
 }) async {
   _assertE2E(
     isGroupChat: isGroupChat,
@@ -280,7 +395,13 @@ final plain = await sm.decryptMessage(
     'iv': e2eEnvelope?['iv'],
     'mac': e2eEnvelope?['mac'],
     'senderDeviceId': LocalStorage.getDeviceId(),
-
+    'peerDeviceId': e2eEnvelope?['peerDeviceId'],
+    'repliedMessage': messageReply?.message,
+    'repliedTo': messageReply?.isMe == true
+        ? sender.name
+        : receiverId,
+    'repliedMessageType': messageReply?.messageModel.type,
+    'mediaNonceB64': e2eEnvelope?['mediaNonceB64'],
     'sessionId': e2eEnvelope?['sessionId'],
     'fileUrl': fileUrl,
     'deleted': false,
@@ -289,30 +410,18 @@ final plain = await sm.decryptMessage(
   };
 
 
-  final me = sender.uid;
 
-  final batch = firestore.batch();
+  final chatId = getChatId(sender.uid, receiverId);
 
-  final myRef = firestore
-      .collection('users')
-      .doc(me)
-      .collection('chats')
-      .doc(receiverId)
-      .collection('messages')
-      .doc(messageId);
+await firestore
+  .collection('chats')
+  .doc(chatId)
+  .collection('messages')
+  .doc(messageId)
+  .set(map);
 
-  final peerRef = firestore
-      .collection('users')
-      .doc(receiverId)
-      .collection('chats')
-      .doc(me)
-      .collection('messages')
-      .doc(messageId);
 
-  batch.set(myRef, map);
-  batch.set(peerRef, map);
 
-  await batch.commit();
 }
 
   // ============================================================
@@ -363,99 +472,79 @@ final plain = await sm.decryptMessage(
   // ============================================================
   // 🔐 SEND TEXT (1-TO-1 ONLY)
   // ============================================================
-  Future<void> sendTextMessage({
-    required BuildContext context,
-    required String text,
-    required String recieverUserId,
-    required UserModel senderUser,
-    required MessageReply? messageReply,
-    required bool isGroupChat,
-    required bool isCommunityChat,
-  }) async {
-    if (text.trim().isEmpty) return;
+Future<void> sendTextMessage({
+  required String text,
+  required String recieverUserId,
+  required UserModel senderUser,
+}) async {
 
-    if (isGroupChat || isCommunityChat) {
-      throw Exception('Use group/community repo');
+  _sendQueue.enqueue(() async {
+    final myUid = senderUser.uid;
+    final deviceId = LocalStorage.getDeviceId();
+    if (deviceId == null || deviceId.isEmpty) {
+      throw Exception("DeviceId missing");
     }
 
-    final myUid = senderUser.uid;
-    final now = DateTime.now();
-    final messageId = const Uuid().v1();
+    final chatId = getChatId(myUid, recieverUserId);
+    final messageId = const Uuid().v4();
 
-    await _ensureSession(
+    final identity = IdentityKeyManager(firestore: firestore);
+    final devices = await identity.fetchAllDevicePubMap(recieverUserId);
+    if (devices.isEmpty) throw Exception('Peer has no devices');
+
+    final peerDeviceId = devices.keys.first;
+
+    await ensureSessionForPeer(
+      firestore: firestore,
       myUid: myUid,
       peerUid: recieverUserId,
+      peerDeviceId: peerDeviceId,
+    );
+          // 🔐 EXPLICIT SESSION CHECK (CRITICAL)
+      final session = await sm.loadSession(
+        myUid,
+        recieverUserId,
+        deviceId,
+        peerDeviceId,
+      );
+
+      if (session == null) {
+        throw Exception('E2E session missing after ensureSessionForPeer');
+      }
+
+    final payload = await compute(
+      encryptTextIsolate,
+      TextEncryptParams(
+        myUid: myUid,
+        peerUid: recieverUserId,
+        deviceId: deviceId,
+        peerDeviceId: peerDeviceId,
+        plain: Uint8List.fromList(utf8.encode(text)),
+      ),
     );
 
-    final payload = await sm.encryptMessage(
-      myUid,
-      recieverUserId,
-      LocalStorage.getDeviceId()!,
-
-      Uint8List.fromList(utf8.encode(text)),
-    );
-    final e2e = {
-      'ciphertext': payload['ciphertext']!,
-      'iv': payload['iv']!,
-      'mac': payload['mac']!,
-      'sessionId': sm.canonicalPeer(myUid, recieverUserId),
-
-    };
-
-    _assertE2E(
-      isGroupChat: false,
-      isCommunityChat: false,
-      e2eEnvelope: e2e,
-    );
-
-    // final map = {
-    //   'senderId': myUid,
-    //   'recieverid': recieverUserId,
-    //   'text': '[encrypted]',
-    //   'type': MessageModel.text.type,
-    //   'timeSent': now.millisecondsSinceEpoch,
-    //   'messageId': messageId,
-    //   'isSeen': false,
-    //   ...e2e,
-    //   'deleted': false,
-    //   'edited': false,
-    //   'reactions': {},
-    // };
-
-
-    await _saveMessage(
-      receiverId: recieverUserId,
-      sender: senderUser,
-      type: MessageModel.text,
-      timeSent: now,
-      messageId: messageId,
-      isGroupChat: false,
-      isCommunityChat: false,
-      e2eEnvelope: e2e,
-    );
-
-    await _saveContactRows(
-      sender: senderUser,
-      receiver: null,
-      receiverId: recieverUserId,
-      timeSent: now,
-      isGroupChat: false,
-    );
-
-   await _push.sendChatPush(
-  uid: recieverUserId,
-  title: senderUser.name,
-  body: 'New message',
-  data: {
-    'type': 'chat',
-    'senderUid': senderUser.uid,
-  },
-);
-
-  }
-  void clearSessionCacheFor(String peerUid) {
-  _sessionCache.removeWhere((k) => k.contains(peerUid));
+    await firestore
+        .collection('chats')
+        .doc(chatId)
+        .collection('messages')
+        .doc(messageId)
+        .set({
+          'senderId': myUid,
+          'recieverid': recieverUserId,
+          'ciphertext': payload['ciphertext'],
+          'iv': payload['iv'],
+          'mac': payload['mac'],
+          'senderDeviceId': deviceId,
+          'peerDeviceId': peerDeviceId,
+          'text': '[encrypted]',
+          'timeSent': FieldValue.serverTimestamp(),
+          'messageId': messageId,
+          'isSeen': false,
+        });
+  });
 }
+
+
 
   // ============================================================
   // 📎 SEND FILE (NOT E2E YET – STORED SAFELY)
@@ -471,32 +560,97 @@ final plain = await sm.decryptMessage(
   required bool isGroupChat,
   required bool isCommunityChat,
     }) async {
+      _sendQueue.enqueue(() async {
       if (!isGroupChat && !isCommunityChat) {
       final myUid = senderUserData.uid;
       final now = DateTime.now();
       final messageId = const Uuid().v1();
-      
-
-      await _ensureSession(
-        myUid: myUid,
-        peerUid: recieverUserId,
-      );
-
-      // 1️⃣ Read file
+           // 1️⃣ Read file
       final bytes = await file.readAsBytes();
+      final deviceId = LocalStorage.getDeviceId();
+      if (deviceId == null || deviceId.isEmpty) {
+        debugPrint('❌ sendFileMessage aborted: deviceId missing');
+        return;
+      }
+      final identity = IdentityKeyManager(firestore: firestore);
+      final devices = await identity.fetchAllDevicePubMap(recieverUserId);
+      if (devices.isEmpty) {
+        throw Exception('Peer has no devices');
+      }
+      final peerDeviceId = devices.entries.first.key;
+
+      await ensureSessionForPeer(
+      firestore: firestore,
+      myUid: myUid,
+      peerUid: recieverUserId,
+      peerDeviceId: peerDeviceId, // ✅ CORRECT
+    );
+
+
+ final peerUid = recieverUserId;
+
+  final session = await sm.loadSession(
+    myUid,
+    peerUid,
+    deviceId,
+    peerDeviceId,
+  );
+
+
+// if (session == null) {
+//   final identity = IdentityKeyManager(firestore: firestore);
+
+//   final peerDoc =
+//       await firestore.collection('userKeys').doc(recieverUserId).get();
+//   if (!peerDoc.exists) {
+//     throw Exception('Peer has no identity keys');
+//   }
+
+//   final devices = peerDoc.data()!['devices'] as Map<String, dynamic>;
+//   final peerDeviceId = devices.entries.first.key;
+
+//   final peerPub =
+//       await identity.fetchDevicePublicKey(recieverUserId, peerDeviceId);
+//   if (peerPub == null) {
+//     throw Exception('Peer public key missing');
+//   }
+
+//   final myKeyPair = await KeyManager(firestore: firestore)
+//       .loadLocalKeyPair(uid: myUid, deviceId: deviceId);
+
+//   session = await sm.initSession(
+//     myUid: myUid,
+//     peerId: recieverUserId,
+//     myIdentityKeyPair: myKeyPair,
+//     deviceId: deviceId,
+//     peerDeviceId: peerDeviceId,
+//     peerIdentityPub: peerPub,
+//   );
+// }
+
+
+      if (session == null) {
+        throw Exception('❌ No E2E session – cannot send message');
+      }
+
+
 
       // 2️⃣ Encrypt media
-      final enc = await MediaE2eHelper.encryptBytes(
-        plainBytes: bytes,
-      );
+   final enc = await compute(
+  mediaEncryptIsolate,
+  MediaEncryptParams(plainBytes: bytes),
+);
+
+
 
       // 3️⃣ Encrypt mediaKey using E2E
-      final wrappedKey = await sm.encryptMediaKey(
-        myUid,
-        recieverUserId,
-        LocalStorage.getDeviceId()!,
-        base64Decode(enc['mediaKeyB64']!),
-      );
+     final wrappedKey = await sm.encryptMediaKey(
+              myUid,
+              recieverUserId,
+              deviceId,
+              peerDeviceId,
+              base64Decode(enc['mediaKeyB64']!),
+            );
 
       // 4️⃣ Upload encrypted bytes
       final storage = ref.read(commonFirebaseStorageRepositoryProvider);
@@ -519,8 +673,12 @@ final plain = await sm.decryptMessage(
           'iv': wrappedKey['iv']!,
           'mac': wrappedKey['mac']!,
           'mediaNonceB64': enc['mediaNonceB64']!,
+          'sessionId': sm.canonicalPeer(myUid, recieverUserId),
+          'peerDeviceId': session.peerDeviceId,
+
         },
         fileUrl: url,
+        messageReply: messageReply,
       );
       await _saveContactRows(
         sender: senderUserData,
@@ -535,41 +693,46 @@ final plain = await sm.decryptMessage(
       body: 'Sent you a file',
       data: {
         'type': 'chat',
-        'senderUid': senderUserData.uid,
+        'chatId': getChatId(senderUserData.uid, recieverUserId),
       },
     );
 
-
-      
+    };
+    });
     }
-    }
-    
+  
   // ============================================================
   // 👀 SEEN
   // ============================================================
   Future<void> setChatMessageSeen(
-      BuildContext? context, String otherUid, String messageId) async {
-    final uid = currentUser?.uid;
-    if (uid == null) return;
+  BuildContext? context,
+  String otherUid,
+  String messageId,
+) async {
+  final uid = currentUser?.uid;
+  if (uid == null) return;
 
-    await firestore
-        .collection('users')
-        .doc(uid)
-        .collection('chats')
-        .doc(otherUid)
-        .collection('messages')
-        .doc(messageId)
-        .update({'isSeen': true});
+  try {
+    final chatId = getChatId(uid, otherUid);
 
-    await firestore
-        .collection('users')
-        .doc(otherUid)
+    final ref = firestore
         .collection('chats')
-        .doc(uid)
+        .doc(chatId)
         .collection('messages')
-        .doc(messageId)
-        .update({'isSeen': true});
+        .doc(messageId);
+
+    final snap = await ref.get();
+    if (!snap.exists) return; // ✅ SAFETY
+
+    // ✅ ONLY ONE UPDATE (single source of truth)
+    await ref.update({'isSeen': true});
+
+  } catch (e) {
+    debugPrint('⚠️ setChatMessageSeen skipped: $e');
   }
+}
+
+
   
   // ============================================================
   // 😀 REACTIONS (SAFE)
@@ -583,13 +746,12 @@ final plain = await sm.decryptMessage(
     final me = auth.currentUser?.uid;
     if (me == null) return;
 
-    final doc = firestore
-        .collection('users')
-        .doc(me)
-        .collection('chats')
-        .doc(chatId)
-        .collection('messages')
-        .doc(messageId);
+   final doc = firestore
+  .collection('chats')
+  .doc(chatId)
+  .collection('messages')
+  .doc(messageId);
+
 
     final snap = await doc.get();
     if (!snap.exists) return;
@@ -605,103 +767,111 @@ final plain = await sm.decryptMessage(
     });
 
     await firestore
-        .collection('users')
-        .doc(chatId)
-        .collection('chats')
-        .doc(me)
-        .collection('messages')
-        .doc(messageId)
-        .update({
-      'reactions.$emoji': list.contains(uid)
-          ? FieldValue.arrayRemove([uid])
-          : FieldValue.arrayUnion([uid])
-    });
+    .collection('chats')
+    .doc(chatId)
+    .collection('messages')
+    .doc(messageId)
+    .update({
+  'reactions.$emoji': list.contains(uid)
+      ? FieldValue.arrayRemove([uid])
+      : FieldValue.arrayUnion([uid])
+});
+
   }
 
   // ============================================================
   // 🗑 DELETE (NO PLAINTEXT)
   // ============================================================
   Future<void> deleteMessage({
-    required String chatId,
-    required String messageId,
-    bool isGroup = false,
-  }) async {
-    final me = auth.currentUser?.uid;
-    if (me == null) return;
+  required String chatId,
+  required String messageId,
+  bool isGroup = false,
+}) async {
+  final me = auth.currentUser?.uid;
+  if (me == null) return;
 
-    final update = {'deleted': true, 'text': '[deleted]'};
+  final update = {
+    'deleted': true,
+    'text': '[deleted]',
+  };
 
-    await firestore
-        .collection('users')
-        .doc(me)
-        .collection('chats')
-        .doc(chatId)
-        .collection('messages')
-        .doc(messageId)
-        .update(update);
+  // ✅ SINGLE SOURCE OF TRUTH
+  await firestore
+      .collection('chats')
+      .doc(chatId)
+      .collection('messages')
+      .doc(messageId)
+      .update(update);
+}
 
-    await firestore
-        .collection('users')
-        .doc(chatId)
-        .collection('chats')
-        .doc(me)
-        .collection('messages')
-        .doc(messageId)
-        .update(update);
-  }
 
   // ============================================================
   // 🚫 EDIT = RE-ENCRYPT
   // ============================================================
-  Future<void> editMessage({
-    required String chatId,
-    required String messageId,
-    required String newText,
-    required String otherUid,
-    bool isGroup = false,
-  }) async {
-    if (isGroup) return;
+ Future<void> editMessage({
+  required String chatId,
+  required String messageId,
+  required String newText,
+  required String otherUid,
+  bool isGroup = false,
+}) async {
+  if (isGroup) return;
 
-    final myUid = auth.currentUser!.uid;
+  final myUid = auth.currentUser?.uid;
+  if (myUid == null) return;
 
-    await _ensureSession(
-      myUid: myUid,
-      peerUid: otherUid,
-    );
+  final deviceId = LocalStorage.getDeviceId();
+  if (deviceId == null || deviceId.isEmpty) return;
 
-    final payload = await sm.encryptMessage(
-      myUid,
-      otherUid,
-      LocalStorage.getDeviceId()!,
-      Uint8List.fromList(utf8.encode(newText)),
-    );
+  final identity = IdentityKeyManager(firestore: firestore);
+  final devices = await identity.fetchAllDevicePubMap(otherUid);
+  if (devices.isEmpty) throw Exception('Peer has no devices');
 
-    final update = {
-      'text': '[encrypted]',
-      'ciphertext': payload['ciphertext'],
-      'iv': payload['iv'],
-      'mac': payload['mac'],
-      'edited': true,
-    };
+  final peerDeviceId = devices.entries.first.key;
 
-    await firestore
-        .collection('users')
-        .doc(myUid)
-        .collection('chats')
-        .doc(otherUid)
-        .collection('messages')
-        .doc(messageId)
-        .update(update);
+  await ensureSessionForPeer(
+    firestore: firestore,
+    myUid: myUid,
+    peerUid: otherUid,
+    peerDeviceId: peerDeviceId,
+  );
 
-    await firestore
-        .collection('users')
-        .doc(otherUid)
-        .collection('chats')
-        .doc(myUid)
-        .collection('messages')
-        .doc(messageId)
-        .update(update);
+  final session = await sm.loadSession(
+    myUid,
+    otherUid,
+    deviceId,
+    peerDeviceId,
+  );
+
+  if (session == null || session.peerDeviceId != peerDeviceId) {
+    throw Exception('Edit failed: session mismatch');
   }
+
+  final payload = await sm.encryptMessage(
+    myUid,
+    otherUid,
+    deviceId,
+    peerDeviceId,
+    Uint8List.fromList(utf8.encode(newText)),
+  );
+
+  final update = {
+    'text': '[encrypted]',
+    'ciphertext': payload['ciphertext'],
+    'iv': payload['iv'],
+    'mac': payload['mac'],
+    'edited': true,
+  };
+
+  // ✅ SINGLE SOURCE OF TRUTH
+  await firestore
+      .collection('chats')
+      .doc(chatId)
+      .collection('messages')
+      .doc(messageId)
+      .update(update);
+}
+
 
 Future<File> decryptMediaForMe(Message m) async {
   if (m.senderDeviceId.isEmpty) {
@@ -720,123 +890,198 @@ Future<File> decryptMediaForMe(Message m) async {
   final peerUid =
       m.senderId == myUid ? m.recieverid : m.senderId;
 
-  // 🔐 ensure session
-  final existing =
-      await sm.loadSession(myUid, peerUid, LocalStorage.getDeviceId()!);
-
-  if (existing == null) {
-    await _ensureSession(myUid: myUid, peerUid: peerUid);
+  final deviceId = LocalStorage.getDeviceId();
+  if (deviceId == null || deviceId.isEmpty) {
+    throw Exception('❌ deviceId missing – cannot decrypt media');
   }
+await SessionGuard.run(
+  key: '$myUid-$peerUid-${m.senderDeviceId}',
+  action: () async {
+    await ensureSessionForPeer(
+      firestore: firestore,
+      myUid: myUid,
+      peerUid: peerUid,
+      peerDeviceId: m.senderDeviceId,
+    );
+  },
+);
 
-  // 🔑 decrypt media key
-  final peerPub = await IdentityKeyManager(firestore: firestore)
-      .fetchDevicePublicKey(peerUid, m.senderDeviceId);
 
-  final mediaKey = await sm.decryptMediaKey(
-    myUid,
-    peerUid,
-    LocalStorage.getDeviceId()!,
-    peerPub!,
-    {
-      'ciphertext': m.ciphertext!,
-      'iv': m.iv!,
-      'mac': m.mac!,
-    },
-  );
+  // ensure session
+final session = await sm.loadSession(
+  myUid,
+  peerUid,
+  deviceId,
+  m.senderDeviceId,
+);
 
-  // 📥 download encrypted bytes
+
+if (session == null) {
+  throw Exception("session missing after ensureSessionForPeer");
+}
+// if (session == null) {
+//   final identity = IdentityKeyManager(firestore: firestore);
+
+//   final peerPub =
+//       await identity.fetchDevicePublicKey(peerUid, m.peerDeviceId);
+//   if (peerPub == null) {
+//     throw Exception('Peer public key missing');
+//   }
+
+//   final myKeyPair = await KeyManager(firestore: firestore)
+//       .loadLocalKeyPair(uid: myUid, deviceId: deviceId);
+
+//   session = await sm.initSession(
+//     myUid: myUid,
+//     peerId: peerUid,
+//     myIdentityKeyPair: myKeyPair,
+//     deviceId: deviceId,
+//     peerDeviceId: m.peerDeviceId!,
+//     peerIdentityPub: peerPub,
+//   );
+// }
+
+  // if (existing == null) {
+  //   await _ensureSession(myUid: myUid, peerUid: peerUid);
+  // }
+
+  // final peerPub = await IdentityKeyManager(firestore: firestore)
+  //     .fetchDevicePublicKey(peerUid, m.peerDeviceId);
+
+
+
+final mediaKey = await sm.decryptMediaKey(
+  myUid,
+  peerUid,
+  deviceId,
+  m.senderDeviceId,
+  {
+    'ciphertext': m.ciphertext!,
+    'iv': m.iv!,
+    'mac': m.mac!,
+  },
+);
+
   final req = await HttpClient().getUrl(Uri.parse(m.fileUrl!));
   final res = await req.close();
   final encryptedBytes =
       await consolidateHttpClientResponseBytes(res);
 
-  // 🔓 decrypt media bytes
-      final Uint8List plainBytes = await MediaE2eHelper.decryptBytes(
-        encryptedBytes: encryptedBytes,
-        mediaKey: mediaKey,
-        nonce: base64Decode(m.mediaNonceB64!),
+ final plainBytes = await compute(
+  mediaDecryptIsolate,
+  MediaDecryptParams(
+    encryptedBytes: encryptedBytes,
+    mediaKey: mediaKey,
+    nonce: base64Decode(m.mediaNonceB64!),
+  ),
+);
+
+
+      final dir = await getTemporaryDirectory();
+      // derive extension safely
+      final uri = Uri.parse(m.fileUrl!);
+      final ext = p.extension(uri.path).replaceFirst('.', '');
+
+      final safeExt = ext.isNotEmpty ? ext : 'bin';
+
+      final file = File(
+        '${dir.path}/${DateTime.now().millisecondsSinceEpoch}.$safeExt',
       );
 
 
-  // 📁 SAVE AS TEMP FILE
-  final dir = await getTemporaryDirectory();
+    await file.writeAsBytes(plainBytes, flush: true);
+    return file;
 
-  final ext = m.type.isImage
-      ? 'jpg'
-      : m.type.isVideo
-          ? 'mp4'
-          : m.type.isAudio
-              ? 'aac'
-              : 'bin';
-
-  final file = File(
-    '${dir.path}/${DateTime.now().millisecondsSinceEpoch}.$ext',
-  );
-
-  await file.writeAsBytes(plainBytes, flush: true);
-
-  // ✅ RETURN FILE (IMPORTANT)
-  return file;
-}
+    }
 
   // ============================================================
   // 🔒 BLOCK
   // ============================================================
-  Future<void> blockUser(String targetUid) async {
-    final myUid = auth.currentUser!.uid;
-    await firestore
+Future<void> blockUser(String targetUid) async {
+  final myUid = auth.currentUser!.uid;
+
+  await firestore
       .collection('users')
       .doc(myUid)
       .collection('blocked')
       .doc(targetUid)
-      .set({'at': FieldValue.serverTimestamp()});
+      .set({
+    'blockedAt': FieldValue.serverTimestamp(),
+  });
+}
 
-  }
 
   Future<void> unblockUser(String targetUid) async {
-    final myUid = auth.currentUser!.uid;
-    await firestore.collection('users').doc(myUid).update({
-      'blocked': FieldValue.arrayRemove([targetUid])
-    });
-  }
+  final myUid = auth.currentUser!.uid;
 
-  Stream<bool> isBlocked(String targetUid) {
-    final myUid = auth.currentUser!.uid;
-    return firestore.collection('users').doc(myUid).snapshots().map((s) {
-      final list = List<String>.from(s.data()?['blocked'] ?? []);
-      return list.contains(targetUid);
-    });
-  }
+  await firestore
+      .collection('users')
+      .doc(myUid)
+      .collection('blocked')
+      .doc(targetUid)
+      .delete();
+}
+
+Stream<bool> isBlocked(String targetUid) {
+  final myUid = auth.currentUser!.uid;
+
+  return firestore
+      .collection('users')
+      .doc(myUid)
+      .collection('blocked')
+      .doc(targetUid)
+      .snapshots()
+      .map((doc) => doc.exists);
+}
+
+Future<bool> isBlockedByPeer(String peerUid) async {
+  final myUid = auth.currentUser!.uid;
+
+  final doc = await firestore
+      .collection('users')
+      .doc(peerUid)
+      .collection('blocked')
+      .doc(myUid)
+      .get();
+
+  return doc.exists;
+}
 
   // ============================================================
   // 📚 CHAT LISTS
   // ============================================================
-  Stream<List<ChatContactModel>> getChatContacts() {
-    final uid = currentUser?.uid;
-    if (uid == null) return const Stream.empty();
+ 
 
-    return firestore
+Stream<List<ChatContactModel>> getChatContacts() async* {
+  await for (final user in auth.authStateChanges()) {
+    if (user == null) {
+      yield <ChatContactModel>[]; // 🔥 stops Firestore on logout
+      continue;
+    }
+
+    yield* firestore
         .collection('users')
-        .doc(uid)
+        .doc(user.uid)
         .collection('chats')
         .orderBy("timeSent", descending: true)
         .snapshots()
         .asyncMap((snapshot) async {
-      List<ChatContactModel> contacts = [];
-      for (var doc in snapshot.docs) {
-        final chatContact = ChatContactModel.fromMap(doc.data());
-        final userSnap =
-            await firestore.collection('users').doc(chatContact.contactId).get();
-        if (!userSnap.exists) continue;
-        final user = UserModel.fromMap(userSnap.data()!);
-        contacts.add(chatContact.copyWith(
-          name: user.name,
-          profilePic: user.profilePic,
-        ));
-      }
-      return contacts;
-    });
+          final contacts = <ChatContactModel>[];
+          for (final doc in snapshot.docs) {
+            final data = doc.data();
+            final isHidden = data['isHideChat'] == true;
+
+            if (!isHidden) {
+              contacts.add(ChatContactModel.fromMap(data));
+            }
+
+          }
+          return contacts;
+        });
   }
+}
+
+
 
 Stream<List<Group>> getChatGroups() {
   final uid = FirebaseAuth.instance.currentUser!.uid;

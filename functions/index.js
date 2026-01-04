@@ -1,17 +1,64 @@
+// process.env.TZ = "Asia/Kolkata";
+// const { onCall, HttpsError } = require("firebase-functions/v2/https");
+// const admin = require("firebase-admin");
+// const { RtcTokenBuilder, RtcRole } = require("agora-access-token");
+// const { defineSecret } = require("firebase-functions/params");
+
+// // ✅ INIT ONCE
+// admin.initializeApp();
+
+// const db = admin.firestore();
+// const messaging = admin.messaging();
+
+// // ENV
+// const AGORA_APP_ID = "8fc842bb18b545d2ab4453fe61cf6d83"; // Hardcoded as in Dart
+// const agoraAppCert = defineSecret("AGORA_APP_CERT");
 process.env.TZ = "Asia/Kolkata";
+
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const { RtcTokenBuilder, RtcRole } = require("agora-access-token");
+const { defineSecret } = require("firebase-functions/params");
 
-// ✅ INIT ONCE
 admin.initializeApp();
 
-const db = admin.firestore();
-const messaging = admin.messaging();
+const AGORA_APP_ID = "8fc842bb18b545d2ab4453fe61cf6d83";
+const AGORA_APP_CERT = defineSecret("AGORA_APP_CERT");
 
-// ENV
-const AGORA_APP_ID = process.env.AGORA_APP_ID;
-const AGORA_APP_CERT = process.env.AGORA_APP_CERT;
+exports.getAgoraToken = onCall(
+  { region: "asia-south1", secrets: [AGORA_APP_CERT] },
+  async (req) => {
+    const cert = AGORA_APP_CERT.value();
+
+    if (!AGORA_APP_ID || !cert) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Agora App ID / Certificate missing"
+      );
+    }
+
+    const { channelName, uid } = req.data || {};
+
+    if (!channelName) {
+      throw new HttpsError("invalid-argument", "channelName required");
+    }
+
+    const agoraUid = Number(uid ?? 0);
+    const now = Math.floor(Date.now() / 1000);
+    const expire = 3600;
+
+    const token = RtcTokenBuilder.buildTokenWithUid(
+      AGORA_APP_ID,
+      cert,
+      channelName,
+      agoraUid,
+      RtcRole.PUBLISHER,
+      now + expire
+    );
+
+    return { token };
+  }
+);
 
 /* =========================================================
    🔔 SEND CHAT PUSH (MULTI DEVICE)
@@ -51,6 +98,8 @@ exports.sendPush = onCall(
       data: payload || {},
       android: { priority: "high" },
     });
+    console.log(data)
+
 
     return { success: true, sent: tokens.length };
   }
@@ -108,34 +157,36 @@ exports.sendCallNotification = onCall(
   }
 );
 
-/* =========================================================
-   🎥 AGORA TOKEN
-========================================================= */
-exports.getAgoraToken = onCall(
-  { region: "asia-south1" },
-  async (req) => {
-    if (!AGORA_APP_ID || !AGORA_APP_CERT) {
-      throw new HttpsError("failed-precondition", "Agora ENV missing");
-    }
+// /* =========================================================
+//    🎥 AGORA TOKEN
+// ========================================================= */
+// exports.getAgoraToken = onCall(
+//   { region: "asia-south1", secrets: ["AGORA_APP_CERT"] },
+//   async (req) => {
+//     const AGORA_APP_CERT = agoraAppCert.value;
 
-    const { channelName, uid } = req.data || {};
-    if (!channelName) {
-      throw new HttpsError("invalid-argument", "channelName required");
-    }
+//     if (!AGORA_APP_ID || !AGORA_APP_CERT) {
+//       throw new HttpsError("failed-precondition", "Agora ENV missing");
+//     }
 
-    const agoraUid = Number(uid ?? 0);
-    const expire = 3600;
-    const now = Math.floor(Date.now() / 1000);
+//     const { channelName, uid } = req.data || {};
+//     if (!channelName) {
+//       throw new HttpsError("invalid-argument", "channelName required");
+//     }
 
-    const token = RtcTokenBuilder.buildTokenWithUid(
-      AGORA_APP_ID,
-      AGORA_APP_CERT,
-      channelName,
-      agoraUid,
-      RtcRole.PUBLISHER,
-      now + expire
-    );
+//     const agoraUid = Number(uid ?? 0);
+//     const expire = 3600;
+//     const now = Math.floor(Date.now() / 1000);
 
-    return { token };
-  }
-);
+//     const token = RtcTokenBuilder.buildTokenWithUid(
+//       AGORA_APP_ID,
+//       AGORA_APP_CERT,
+//       channelName,
+//       agoraUid,
+//       RtcRole.PUBLISHER,
+//       now + expire
+//     );
+
+//     return { token };
+//   }
+// );
